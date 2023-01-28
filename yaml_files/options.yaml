@@ -1,0 +1,50 @@
+# EPFL computers: PBE-like schedulers
+fidis:
+      account: lcbc
+      resources:
+            num_machines: 5
+            num_mpiprocs_per_machine: 28
+            num_cores_per_machine: 28
+
+      max_wallclock_seconds: 43200 # 12 hours
+      max_memory_kb: 100000000
+
+helvetios:
+      account: lcbc
+      resources:
+            num_machines: 5
+            num_mpiprocs_per_machine: 18
+            num_cores_per_machine: 18
+
+      max_wallclock_seconds: 43200 # 12 hours
+      max_memory_kb: 100000000
+
+daint:
+      account: s1159
+      queue_name: normal
+      resources:
+            num_machines: 7
+            num_mpiprocs_per_machine: 12
+            num_cores_per_machine: 12
+
+      max_wallclock_seconds: 43200 # 12 hours
+      max_memory_kb: 60000000
+
+# UCL computers
+# Thomas uses SGE: https://aiida.readthedocs.io/projects/aiida-core/en/latest/topics/schedulers.html#topics-schedulers-job-resources-par
+
+thomas:
+    withmpi: True
+    resources:
+            parallel_env: mpi
+            tot_num_mpiprocs: 120 # 24 cores/node
+    max_wallclock_seconds: 43200 # 12 hours
+    max_memory_kb: 100000000
+young:
+    withmpi: True
+    resources:
+            parallel_env: mpi
+            tot_num_mpiprocs: 120 # 4o cores/node
+    max_wallclock_seconds: 43200 # 12 hours
+    max_memory_kb: 100000000
+    account: Gold
