@@ -1,6 +1,8 @@
 """Query material from materials project database, and submit relaxation"""
 
 from copy import deepcopy
+import os
+from monty.serialization import loadfn
 
 # pymatgen
 from pymatgen.ext.matproj import MPRester
@@ -14,11 +16,13 @@ from aiida.common.extendeddicts import AttributeDict
 from aiida.engine import submit, calcfunction
 
 # Parameters:
-api_key="MsKnfQSzWAraK6zyhZ7OlNTlVl2GMuWr"
+#api_key="MsKnfQSzWAraK6zyhZ7OlNTlVl2GMuWr"
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 # Query material from materials project database based on mp-id
 @calcfunction
-def query_mp(
+def query_materials_project(
     api_key: Str,
     material_id: Str,
 ) -> StructureData:
@@ -33,7 +37,6 @@ def query_mp(
     return StructureData(pymatgen_structure=prim)
 
 
-# Calculate the kpoints required for the relaxation based on density
 @calcfunction
 def get_kpoints_from_density(
     structure: StructureData,
@@ -49,3 +52,16 @@ def get_kpoints_from_density(
     return kpoints_data
 
 
+def get_options_dict(
+    computer: str,
+):
+    """
+    Get the options for a given computer.
+    """
+    options = loadfn(os.path.join(MODULE_DIR, "yaml_files/options.yaml"))
+    if not computer in options.keys():
+        raise ValueError(
+            f"Computer {computer} not found in options.yaml! "
+            +"Please update this file"
+        )
+    return options[computer]

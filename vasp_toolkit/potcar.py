@@ -22,7 +22,7 @@ warnings.filterwarnings(
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_potcar_dict = loadfn(
-    os.path.join(MODULE_DIR, "yaml_files/default_POTCARs.yaml")
+    os.path.join(MODULE_DIR, "../yaml_files/vasp/default_POTCARs.yaml")
 )
 
 

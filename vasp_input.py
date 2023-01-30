@@ -4,6 +4,7 @@ import warnings
 from copy import deepcopy
 
 from monty.serialization import loadfn
+from pymatgen.core.structure import Structure
 from pymatgen.io.vasp.sets import BadInputSetWarning
 from pymatgen.io.vasp.inputs import BadIncarWarning, incar_params
 from pymatgen.analysis.defects.thermo import DefectEntry
@@ -19,8 +20,9 @@ default_snb_incar_settings = loadfn(
 
 # TODO: refactor for pymatgen.analysis.defects
 def setup_incar_snb(
-    defect_entry: DefectEntry,
-    input_dir: str = None,
+    supercell: Structure,
+    charge: int,
+    # input_dir: str = None,
     incar_settings: dict = None,
     potcar_settings: dict = None,
 ) -> None:
@@ -28,8 +30,10 @@ def setup_incar_snb(
     Generates input files for vasp Gamma-point-only relaxation.
 
     Args:
-        single_defect_dict (:obj:`DefectEntry`):
-            pymatgen.analysis.defects.thermo.DefectEntry object
+        supercell (:obj:`pymatgen.core.structure.Structure`):
+            Supercell structure to generate defect inputs for.
+        charge (:obj:`int`):
+            Charge of the defect.
         input_dir (:obj:`str`):
             Folder in which to create vasp_gam calculation inputs folder
             (Recommended to set as the key of the prepare_vasp_defect_inputs()
@@ -51,9 +55,7 @@ def setup_incar_snb(
     Returns:
         DefectRelaxSet object
     """
-    supercell = defect_entry.sc_entry.structure
     num_elements = len(supercell.composition.elements)  # for ROPT setting in INCAR
-    charge = defect_entry.charge_state
 
     warnings.filterwarnings(
         "ignore", category=BadInputSetWarning

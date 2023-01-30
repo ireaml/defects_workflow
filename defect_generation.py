@@ -14,10 +14,8 @@ from pymatgen.analysis.defects.generators import (
 )
 from pymatgen.analysis.defects.thermo import DefectEntry
 
-from aiida.orm import Dict, Float, Int, Bool, StructureData, ArrayData
+from aiida.orm import Dict, Float, Int, Bool, Str, StructureData, ArrayData
 from aiida.engine import calcfunction, workfunction
-
-from shakenbreak.input import Distortions
 
 from charge_tools import get_charges, group_ions, extend_list_to_zero
 
@@ -174,24 +172,29 @@ def generate_defect_entries(
         for defect in value:
             supercell_struct = defect.get_supercell_structure(
                 sc_mat=sc_mat,
-                dummy_species=dummy_species,
+                dummy_species="X",  # for vacancies, to get defect frac coords in supercell
                 max_atoms=max_atoms,
                 min_atoms=min_atoms,
                 min_length=min_length,
                 force_diagonal=force_diagonal,
             )
+            # Get defect frac coords in supercell
+            sc_defect_frac_coords = supercell_struct.pop(-1).frac_coords  # Added at the end
+
             sc_entry = ComputedStructureEntry(
                 structure=supercell_struct,
-                energy=None,  # Needs to be set, so just set to None
+                energy=0.0,  # Needs to be set, so just set to 0.0
             )
             for charge_state in defect.user_charges:
-                defect_entry = DefectEntry(
-                    defect=defect,
-                    charge_state=charge_state,
-                    sc_entry=sc_entry,
+                defect_entries.append(
+                    DefectEntry(
+                        defect=defect,
+                        charge_state=charge_state,
+                        sc_entry=sc_entry,
+                        sc_defect_frac_coords=sc_defect_frac_coords,
+                    )
                 )
-                defect_entries.append(defect_entry)
-        defects_dict[key] = defect_entries
+        defects_dict[key] = defect_entries  # for each defect, list of DefectEntries
     return defects_dict
 
 
@@ -249,23 +252,3 @@ def generate_supercell_n_defects(
     )
     return Dict(dict=defect_entries_dict)
 
-
-
-
-def apply_shakenbreak(
-    defect_entries_dict: dict,
-    distortion_increment: Float=Float(0.1),
-    stdev: Float=Float(0.25),
-):
-    # Refactor defect_entries_dict to be a list of DefectEntries rather
-    # than a dict
-    defect_entries_list = sum(defect_entries_dict.values(), [])
-    # Apply distortions:
-    dist = Distortions(
-        defects=defect_entries_list,
-        distortion_increment=distortion_increment,
-        stdev=stdev,
-    )
-    # Now we need to get INCAR dict for each defect
-    # Need to homogenize potcar keywords of setup_incar_snb
-    # and the potcar keywords of the workchain

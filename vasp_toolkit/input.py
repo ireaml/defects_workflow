@@ -20,11 +20,11 @@ from pymatgen.io.vasp.inputs import Potcar
 warnings.filterwarnings("ignore")  # ignore potcar warnings
 
 # In-house stuff
-from vasp_toolkit.potcar import *
+from vasp_toolkit.potcar import get_potcar_mapping, get_number_of_electrons
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_potcar_dict = loadfn(
-    os.path.join(MODULE_DIR, "yaml_files/default_POTCARs.yaml")
+    os.path.join(MODULE_DIR, "../yaml_files/vasp/default_POTCARs.yaml")
 )
 
 
@@ -131,7 +131,6 @@ def check_paralellization(
     )
     cores = nodes * cores_per_node
     print("Total number of cores: ", cores)
-    assert kpar <= nodes, "KPAR should be smaller than the number of nodes"
     assert cores % kpar == 0, "Number of cores not divisible by KPAR!"
     print("Cores per kpoint:", cores / kpar)
     npar = cores / (kpar * ncore)
