@@ -1,13 +1,16 @@
 # ARCHER2 computers: PBE-like schedulers
 archer2:
       account: e05-gc-wal
+      queue_name: standard
       resources:
             num_machines: 2
             num_mpiprocs_per_machine: 128
             num_cores_per_machine: 128
 
       max_wallclock_seconds: 43200 # 12 hours
-      max_memory_kb: 100000000
+      mpirun_extra_params: [--distribution=block:block, --hint=nomultithread]
+      import_sys_environment: False
+      # max_memory_kb: 100000000 # Dont sent memory limit for archer2
 
 # UCL computers
 # Thomas uses SGE: https://aiida.readthedocs.io/projects/aiida-core/en/latest/topics/schedulers.html#topics-schedulers-job-resources-par

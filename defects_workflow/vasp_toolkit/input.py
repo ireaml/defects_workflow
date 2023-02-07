@@ -19,8 +19,7 @@ from pymatgen.io.vasp.inputs import Potcar
 
 warnings.filterwarnings("ignore")  # ignore potcar warnings
 
-# In-house stuff
-from vasp_toolkit.potcar import get_potcar_mapping, get_number_of_electrons
+from defects_workflow.vasp_toolkit.potcar import get_potcar_mapping, get_number_of_electrons
 
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_potcar_dict = loadfn(

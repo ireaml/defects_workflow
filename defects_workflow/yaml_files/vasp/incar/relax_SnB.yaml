@@ -3,7 +3,7 @@
 '# KPAR': '# No KPAR, only one kpoint'
 ALGO: Normal
 EDIFFG: -0.01
-ENCUT: 300
+ENCUT: 400
 HFSCREEN: 0.2
 IBRION: '2 # While often slower than ''1'' (RMM-DIIS), this is more stable and reliable,
     and vasp_gam relaxations are typically cheap enough to justify it'

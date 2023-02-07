@@ -5,9 +5,11 @@ import os
 from monty.serialization import loadfn
 
 # pymatgen
-from pymatgen.ext.matproj import MPRester
+#from pymatgen.ext.matproj import MPRester
+from mp_api.client import MPRester
 from pymatgen.io.vasp.inputs import Kpoints
 from pymatgen.core.structure import Structure
+from pymatgen.analysis.structure_matcher import StructureMatcher
 
 # aiida
 from aiida.plugins import DataFactory, WorkflowFactory
@@ -16,11 +18,9 @@ from aiida.common.extendeddicts import AttributeDict
 from aiida.engine import submit, calcfunction
 
 # Parameters:
-#api_key="MsKnfQSzWAraK6zyhZ7OlNTlVl2GMuWr"
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-# Query material from materials project database based on mp-id
 @calcfunction
 def query_materials_project(
     api_key: Str,
@@ -48,7 +48,8 @@ def get_kpoints_from_density(
         structure=pmg_structure,
         kppa=k_density.value
     )
-    kpoints_data = KpointsData().set_kmesh(kpoints.kpts)
+    kpoints_data = KpointsData()
+    kpoints_data.set_kpoints_mesh(kpoints.kpts[0])
     return kpoints_data
 
 
@@ -65,3 +66,16 @@ def get_options_dict(
             +"Please update this file"
         )
     return options[computer]
+
+
+def compare_structures(struct_1, struct_2):
+    """Determine if two structures are equivalent."""
+    sm = StructureMatcher(ltol=0.3, stol=0.4, angle_tol=7)  # a bit looser than default
+    try:
+        max_dist = sm.get_rms_dist(struct_1, struct_2)[1]
+        if max_dist < 0.1:
+            return True
+        else:
+            return False
+    except:
+        return False # couldnt match structures, so not the same

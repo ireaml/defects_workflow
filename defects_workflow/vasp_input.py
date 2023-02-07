@@ -8,6 +8,7 @@ from pymatgen.core.structure import Structure
 from pymatgen.io.vasp.sets import BadInputSetWarning
 from pymatgen.io.vasp.inputs import BadIncarWarning, incar_params
 from pymatgen.analysis.defects.thermo import DefectEntry
+from pymatgen.io.vasp.sets import VaspInputSet
 
 from shakenbreak.vasp import _scaled_ediff, _check_psp_dir, DefectRelaxSet
 
@@ -25,7 +26,7 @@ def setup_incar_snb(
     # input_dir: str = None,
     incar_settings: dict = None,
     potcar_settings: dict = None,
-) -> None:
+) -> VaspInputSet:
     """
     Generates input files for vasp Gamma-point-only relaxation.
 

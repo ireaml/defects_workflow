@@ -9,15 +9,20 @@ from pymatgen.core.structure import Structure
 from pymatgen.io.vasp.inputs import BadIncarWarning, incar_params
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from pymatgen.analysis.defects.generators import (
-    VacancyGenerator, AntiSiteGenerator, VoronoiInterstitialGenerator,
+    VacancyGenerator,
+    AntiSiteGenerator,
+    VoronoiInterstitialGenerator,
     _remove_oxidation_states,
 )
+from pymatgen.analysis.defects.core import Defect
 from pymatgen.analysis.defects.thermo import DefectEntry
 
 from aiida.orm import Dict, Float, Int, Bool, Str, StructureData, ArrayData
 from aiida.engine import calcfunction, workfunction
 
-from charge_tools import get_charges, group_ions, extend_list_to_zero
+from shakenbreak.input import _get_defect_name_from_obj
+
+from defects_workflow.charge_tools import get_charges, group_ions, extend_list_to_zero
 
 
 def generate_defects(
@@ -53,17 +58,19 @@ def generate_defects(
     vac_gen = VacancyGenerator(symprec=symprec, angle_tolerance=angle_tolerance,)
     ant_gen = AntiSiteGenerator(symprec=symprec, angle_tolerance=angle_tolerance,)
     int_gen = VoronoiInterstitialGenerator(min_dist=interstitial_min_dist, angle_tol=angle_tolerance,)
+    # These are lists of Defect objects:
     vacancies = vac_gen.get_defects(structure=prim_no_oxi.copy())
     antisites = ant_gen.get_defects(structure=prim_no_oxi.copy())
     interstitials = int_gen.get_defects(
         structure=prim_no_oxi.copy(),
         insert_species=[*map(str, prim.composition.elements)]
     )
-    return {
-        "vacancies": vacancies,
-        "antisites": antisites,
-        "interstitials": interstitials
+    defects_dic = {
+        "vacancies": {_get_defect_name_from_obj(defect): defect for defect in vacancies},
+        "antisites": {_get_defect_name_from_obj(defect): defect for defect in antisites},
+        "interstitials": {_get_defect_name_from_obj(defect): defect for defect in interstitials}
     }
+    return defects_dic
 
 
 def add_charge_states(
@@ -167,34 +174,51 @@ def generate_defect_entries(
         Dictionary of DefectEntries, with keys "vacancies", "antisites"
         and "interstitials".
     """
-    for key, value in defects_dict.items():
-        defect_entries = []
-        for defect in value:
+    def get_defect_entry_from_defect(
+        defect: Defect,
+        charge_state: int,
+        supercell_struct: Structure,
+    ):
+        """Assuming defect supercell has been generated with dummy atom"""
+        # Get defect frac coords in supercell
+        sc_defect_frac_coords = supercell_struct.pop(-1).frac_coords  # Added at the end
+        sc_entry = ComputedStructureEntry(
+            structure=supercell_struct,
+            energy=0.0,  # Needs to be set, so just set to 0.0
+        )
+        return DefectEntry(
+            defect=defect,
+            charge_state=charge_state,
+            sc_entry=sc_entry,
+            sc_defect_frac_coords=sc_defect_frac_coords,
+        )
+
+    if not dummy_species:
+        raise ValueError(
+            "dummy_species must be specified! This is used to keep track"
+            " of the defect coordinates in the supercell."
+        )
+    for key, value in defects_dict.items():  # for defect type (e.g. vacancies)
+        defect_entries = {}
+        for defect_name, defect in value.items():
             supercell_struct = defect.get_supercell_structure(
                 sc_mat=sc_mat,
-                dummy_species="X",  # for vacancies, to get defect frac coords in supercell
+                dummy_species=dummy_species,  # for vacancies, to get defect frac coords in supercell
                 max_atoms=max_atoms,
                 min_atoms=min_atoms,
                 min_length=min_length,
                 force_diagonal=force_diagonal,
             )
-            # Get defect frac coords in supercell
-            sc_defect_frac_coords = supercell_struct.pop(-1).frac_coords  # Added at the end
-
-            sc_entry = ComputedStructureEntry(
-                structure=supercell_struct,
-                energy=0.0,  # Needs to be set, so just set to 0.0
-            )
+            defect_entries[defect_name] = []
             for charge_state in defect.user_charges:
-                defect_entries.append(
-                    DefectEntry(
+                defect_entries[defect_name].append(
+                    get_defect_entry_from_defect(
                         defect=defect,
                         charge_state=charge_state,
-                        sc_entry=sc_entry,
-                        sc_defect_frac_coords=sc_defect_frac_coords,
+                        supercell_struct=supercell_struct,
                     )
                 )
-        defects_dict[key] = defect_entries  # for each defect, list of DefectEntries
+        defects_dict[key] = deepcopy(defect_entries)  # for each defect type, dict of DefectEntries
     return defects_dict
 
 
@@ -203,10 +227,10 @@ def generate_supercell_n_defects(
     bulk: StructureData,
     symprec: Float=Float(0.01),
     angle_tolerance: Int=Int(5),
-    interstitial_min_dist: Float=Float(0.9),
+    interstitial_min_dist: Float=Float(1.0),
     sc_mat: ArrayData | None = None,
     dummy_species: Str | None = None,
-    min_atoms: Int = Int(80),
+    min_atoms: Int = Int(30),
     max_atoms: Int = Int(140),
     min_length: Float = Float(10),
     force_diagonal: Bool = Bool(False),
@@ -234,6 +258,12 @@ def generate_supercell_n_defects(
             Minimum length of supercell. Defaults to Float(10).
         force_diagonal (Bool, optional):
             Force diagonal supercell. Defaults to Bool(False
+
+    Returns:
+        Dict: Dictionary of DefectEntries, with keys "vacancies", "antisites" and
+            "interstitials", e.g.:
+            {"vacancies": [defect_name: [DefectEntry, DefectEntry,] ...],
+            "antitists": [defect_name: [DefectEntry, DefectEntry,], ...], ...}
     """
     defects_dict = generate_defects(
         bulk.get_pymatgen_structure(),
@@ -252,3 +282,26 @@ def generate_supercell_n_defects(
     )
     return Dict(dict=defect_entries_dict)
 
+
+def sort_interstitials_for_screening(defects_dict: Dict):
+    """
+    Loop over defects_dict to identify interstitials of the
+    same element, and select them for screening.
+
+    (These will be relaxed to find the most stable interstitial/
+    avoid cases where different initial structures lead to the
+    same final structure.)
+    """
+    # Group interstitials by element:
+    dict_interstitials = {}  # {Te_i: {Te_i_s32: DefectEntry, ...}, Cd_i: {...}}}
+    for defect_name, entry in defects_dict.value["interstitials"].items():
+        if entry.charge_state == 0: # only neutral for screening
+            if entry.defect.name in dict_interstitials:
+                dict_interstitials[entry.defect.name][defect_name] = entry
+            else:
+                dict_interstitials[entry.defect.name] = {defect_name: entry}
+    # Select cases with more than one interstitial:
+    dict_interstitials = {
+        k: v for k, v in dict_interstitials.items() if len(v) > 1
+    }
+    return Dict(dict=dict_interstitials)
