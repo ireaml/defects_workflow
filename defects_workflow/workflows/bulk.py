@@ -217,15 +217,21 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
             group = path[group_label].get_or_create_group()
             group = path[group_label].get_group()
             group.add_nodes(workchain)
-            print(
-                f"Submitted relax workchain with pk: {workchain.pk}"
-                +f" and label {workchain.label}, "
-                +f"stored in group with label {group_label}"
-            )
-        else:
-            print(
-                f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
-            )
+            # print(
+            #     f"Submitted relax workchain with pk: {workchain.pk}"
+            #     +f" and label {workchain.label}, "
+            #     +f"stored in group with label {group_label}"
+            # )
+        # else:
+        #     print(
+        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
+        #     )
+
+    def setup_composition(self, structure_data: orm.StructureData):
+        """Setup composition."""
+        structure = structure_data.get_pymatgen_structure()
+        composition = structure.composition.to_pretty_string()
+        return composition
 
     def query_mp(self):
         """Query Materials Project for the structure."""
@@ -240,6 +246,10 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
 
     def relax_host_isif_3(self):
         """Relax the host structure."""
+        # Specify composition
+        self.ctx.composition = self.setup_composition(
+            structure_data=self.ctx.structure
+        )
         # Setup VASP inputs:
         self.ctx.kpoints_data = get_kpoints_from_density(
             structure=self.ctx.structure,

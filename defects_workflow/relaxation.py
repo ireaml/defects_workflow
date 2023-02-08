@@ -62,7 +62,7 @@ def setup_relax_inputs(
     wavecar: Optional[WavefunData] = None,
     remote_folder: Optional[RemoteData] = None,
 ):
-    """Setup relaxation workchain"""
+    """Setup and submit relaxation workchain"""
     def setup_settings(settings: dict=None):
         default_settings = {
             "parser_settings": {

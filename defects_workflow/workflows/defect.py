@@ -14,8 +14,10 @@ from aiida import orm
 
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
+from shakenbreak.input import Distortions
+
 from defects_workflow.utils import query_materials_project, get_kpoints_from_density, get_options_dict, compare_structures
-from defects_workflow.relaxation import submit_relaxation
+from defects_workflow.relaxation import setup_relax_inputs
 from defects_workflow.defect_generation import generate_supercell_n_defects, sort_interstitials_for_screening
 from defects_workflow.vasp_input import setup_incar_snb
 
@@ -36,7 +38,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             'structure',
             valid_type=orm.StructureData,
             required=False,
-            help='The host structure.'
+            help='The host structure (primitive or conventional).'
         )
         spec.input(
             'symmetry_tolerance',
@@ -72,8 +74,17 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             cls.analyse_screening_results,
             cls.apply_snb,
             cls.relax_defects,
+            cls.parse_relaxations,
+            cls.results,
         )
-        spec.output('result', valid_type=orm.Int)
+        # Specify outputs:
+        # Structures, Trajectories and forces for
+        # all snb relaxations
+        spec.output(
+            'results',
+            valid_type=orm.Dict,
+            required=False,
+        )
         spec.exit_code(
             0,
             'NO_ERROR',
@@ -84,6 +95,12 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             'ERROR_SUB_PROCESS_FAILED',
             message="The `{cls}` workchain failed with exit status {exit_status}."
         )
+
+    def setup_composition(self, structure_data: orm.StructureData):
+        """Setup composition."""
+        structure = structure_data.get_pymatgen_structure()
+        composition = structure.composition.to_pretty_string()
+        return composition
 
     def _determine_hpc(self):
         code = orm.load_code(self.inputs.code_string_vasp_gam.value)
@@ -114,7 +131,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         time_in_hours: int=24,
     ):
         """Setup options for HPC with aiida."""
-        options = get_options_dict(self.inputs.hpc_string)
+        options = get_options_dict(hpc_string)
         if hpc_string == "archer2":
             options.update({
                 'resources':
@@ -182,6 +199,23 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 },
             }
 
+    def add_workchain_to_group(self, workchain, group_label):
+        """Add workchain to group."""
+        path = GroupPath()
+        if group_label:
+            group = path[group_label].get_or_create_group()
+            group = path[group_label].get_group()
+            group.add_nodes(workchain)
+            # print(
+            #     f"Submitted relax workchain with pk: {workchain.pk}"
+            #     +f" and label {workchain.label}, "
+            #     +f"stored in group with label {group_label}"
+            # )
+        # else:
+        #     print(
+        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
+        #     )
+
     def validate_finished_workchain(self, workchain_name: str):
         """Validate that the workchain finished successfully."""
         workchain = self.ctx[workchain_name]
@@ -231,11 +265,15 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         (for a given element, select interstitials lower in energy).
         """
         self.report("screen_interstitials")
+
+        # Get composition string
+        self.ctx.composition = self.setup_composition(self.inputs.structure)
+
         # Get interstitials with sym ineq configurations:
         self.ctx.int_dict = sort_interstitials_for_screening(self.ctx.defects_dict)
 
         # Get incar (same for all sym ineq interstitials)
-        structure = list(list(int_dict.values())[0].values())[0].sc_entry.structure
+        structure = list(list(self.ctx.int_dict.values())[0].values())[0].sc_entry.structure
         # for screening, only neutral:
         defect_relax_set = setup_incar_snb(supercell=structure, charge=0)
         incar = defect_relax_set.incar
@@ -245,7 +283,8 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         incar.update({"NCORE": self.ctx.ncore})
 
         # Setup KpointsData
-        self.ctx.gam_kpts = orm.KpointsData().set_kpoints_mesh([1, 1, 1])
+        self.ctx.gam_kpts = orm.KpointsData()
+        self.ctx.gam_kpts.set_kpoints_mesh([1, 1, 1])
 
         # Submit geometry optimisations for all interstitials at the same time:
         for general_int_name, defect_entry_dict in self.ctx.int_dict.value.items():
@@ -255,7 +294,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 # Setup settings for screening
                 settings = self.setup_setings(calc_type="screening")
                 # Submit workchain:
-                workchain = submit_relaxation(
+                workchain, inputs = setup_relax_inputs(
                     code_string=self.inputs.code_string_vasp_gam,
                     # aiida config:
                     options=self.ctx.options,
@@ -264,13 +303,20 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     structure_data=structure,
                     kpoints_data=self.ctx.gam_kpts, # 1,1,1
                     incar_dict=deepcopy(incar.as_dict()),
+                    use_default_incar_settings=False,
                     shape=False,
                     volume=False,
                     ionic_steps=300,
                     # Labels:
                     workchain_label=f"screen_{defect_name}",  # eg Te_i_s32
-                    group_label=f"defects_db/{self.ctx.mp_id}/02_interstitials_screening",
                 )
+                workchain = self.submit(workchain, **inputs)
+                # Add to group
+                self.add_workchain_to_group(
+                    workchain=workchain,
+                    group_label=f"defects_db/{self.ctx.composition}/02_interstitials_screening"
+                )
+                # To context:
                 key = f"screen.{defect_name}"
                 self.to_context(**{key: workchain})
 
@@ -313,7 +359,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     # Get structures:
                     structure_1 = self.ctx[f"screen.{defect_name}"].outputs.relax.structure
                     structure_1 = self.ctx[f"screen.{other_key}"].outputs.relax.structure
-                    if compare_structures(struct_1, struct_2):
+                    if compare_structures(structure_1, structure_2):
                         self.ctx.defects_dict["interstitials"].pop(defect_name, None)
 
 
@@ -352,10 +398,14 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         for defect_name, dist_dict in self.ctx.distorted_dict.items():
             for charge in dist_dict["charges"]:
                 # Get incar
+                defect_relax_set = setup_incar_snb(supercell=structure, charge=charge)
+                incar = defect_relax_set.incar
+                # Update ncore based on hpc of code:
+                incar.update({"NCORE": self.ctx.ncore})
+                # Submit each distortion:
                 for dist_name, structure in dist_dict["charges"][charge]["structures"]["distortions"].items():
                     # Submit relaxation (gamma point):
-                    # Submit workchain:
-                    workchain = submit_relaxation(
+                    workchain, inputs = setup_relax_inputs(
                         code_string=self.inputs.code_string_vasp_gam,
                         # aiida config:
                         options=self.ctx.options,
@@ -363,23 +413,50 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                         # VASP inputs:
                         structure_data=structure,
                         kpoints_data=self.ctx.gam_kpts, # 1,1,1
+                        # Incar settings:
                         incar_dict=deepcopy(incar.as_dict()),
+                        use_default_incar_settings=False,
                         shape=False,
                         volume=False,
                         ionic_steps=300,
                         # Labels:
                         workchain_label=f"snb.{defect_name}.{charge}.{dist_name}",  # e.g. snb.Te_i_s32.0.Unperturbed
-                        group_label=f"defects_db/{self.ctx.mp_id}/03_snb_relaxations",
+                    )
+                    workchain = self.submit(workchain, **inputs)
+                    # Add to group
+                    self.add_workchain_to_group(
+                        workchain=workchain,
+                        group_label=f"defects_db/{self.ctx.composition}/03_snb_relaxations"
                     )
                     key = f"snb.{defect_name}.{charge}.{dist_name}"
                     self.to_context(**{key: workchain})
 
-    def validate_relaxations(self):
-        """Validate the relaxations."""
-        self.report("validate_relaxations")
+    def parse_relaxations(self):
+        """Validate & parse data from the relaxations."""
+        self.report("parse_relaxations")
+        out_dict = {}
         for defect_name, dist_dict in self.ctx.distorted_dict.items():
+            out_dict[defect_name] = {}
             for charge in dist_dict["charges"]:
-                # Get incar
+                out_dict[defect_name][charge] = {}
                 for dist_name, structure in dist_dict["charges"][charge]["structures"]["distortions"].items():
                     key = f"snb.{defect_name}.{charge}.{dist_name}"
                     self.validate_finished_workchain(workchain_name=key)
+                    out_dict[defect_name][charge][dist_name] = {
+                        "pk": self.ctx[key].pk,
+                        "remote_folder": self.ctx[key].outputs.remote_folder,
+                        "structure": self.ctx[key].outputs.relax.structure,
+                        "final_energy": self.ctx[key].outputs.misc.get_dict()["total_energies"]["energy_extrapolated"],
+                        "energies": self.ctx[key].outputs.energies,
+                        "stress": self.ctx[key].outputs.stress,
+                        "forces": self.ctx[key].outputs.forces,
+                        "trajectory": self.ctx[key].outputs.trajectory,
+                    }
+        self.ctx.out_dict = out_dict
+
+    def results(self):
+        """Attach the remaining output results.
+        The output dictionary has the following format:
+        {defect_name: {charge: {dist_name: {"pk":, "structure": , etc}, }}}
+        """
+        self.outmany(self.ctx.out_dict)
