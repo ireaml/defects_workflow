@@ -27,9 +27,7 @@ from defects_workflow.utils import (
 )
 from defects_workflow.relaxation import setup_relax_inputs
 from defects_workflow.defect_generation import (
-    setup_defects,
-    setup_defect_charge_states,
-    setup_defect_supercells,
+    generate_supercell_n_defects,
     sort_interstitials_for_screening
 )
 
@@ -268,24 +266,17 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         # Generate defects with pymatgen-analysis-defects
         relaxed_structure = self.inputs.structure
-        defects_dict = setup_defects(
+        defects_dict = generate_supercell_n_defects(
             bulk=relaxed_structure,
             defect_types=self.inputs.defect_types,
-            interstitial_min_dist=orm.Float(1.0),
-        )  # type orm.Dict (not dict!)
-
-        defects_dict_with_charges = setup_defect_charge_states(
-            defects_dict=defects_dict
-        )
-        defects_dict = setup_defect_supercells(
-            defect_dict=defects_dict_with_charges,
             min_length=self.inputs.supercell_min_length,
             symprec=self.inputs.symmetry_tolerance,
             min_atoms=orm.Int(30),
             max_atoms=self.inputs.supercell_max_number_atoms,
             force_diagonal=orm.Bool(False),
+            interstitial_min_dist=orm.Float(1.0),
             dummy_species=orm.Str("X"),  # to keep track of frac coords in sc
-        )
+        )  # type orm.Dict (not dict!)
         self.ctx.defects_dict = defects_dict.get_dict()  # as python dict, easier for postprocessing
 
 
