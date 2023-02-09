@@ -2,8 +2,8 @@
 import os
 import warnings
 from copy import deepcopy
-
 from monty.serialization import loadfn
+
 from pymatgen.core.structure import Structure
 from pymatgen.io.vasp.sets import BadInputSetWarning
 from pymatgen.io.vasp.inputs import BadIncarWarning, incar_params
@@ -12,6 +12,9 @@ from pymatgen.io.vasp.sets import VaspInputSet
 
 from shakenbreak.vasp import _scaled_ediff, _check_psp_dir, DefectRelaxSet
 
+from aiida import orm
+from aiida.engine import calcfunction
+
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 default_potcar_dict = loadfn(f"{MODULE_DIR}/yaml_files/vasp/default_POTCARs.yaml")
 # Load default INCAR settings for the ShakenBreak geometry relaxations
@@ -19,8 +22,30 @@ default_snb_incar_settings = loadfn(
     os.path.join(MODULE_DIR, "yaml_files/vasp/incar/relax_SnB.yaml")
 )
 
-# TODO: refactor for pymatgen.analysis.defects
+
+@calcfunction
 def setup_incar_snb(
+    supercell: orm.StructureData,
+    charge: orm.Int,
+    incar_settings: orm.Dict = None,
+    potcar_settings: orm.Dict = None,
+) -> orm.Dict:
+    """
+    Calcfunction to execute `_setup_incar_snb`.
+    Generates VASP inputs for defect relaxations by considering
+    the charge state of the defect (charge) and specified
+    user settings (incar_settins, potcar_settins).
+    """
+    vasp_input_set = setup_incar_snb(
+        supercell=supercell.get_pymatgen_structure(),
+        charge=charge.value,
+        incar_settings=incar_settings.get_dict(),
+        potcar_settings=potcar_settings.get_dict(),
+    )
+    return Dict(dict=vasp_input_set.as_dict())
+
+
+def _setup_incar_snb(
     supercell: Structure,
     charge: int,
     # input_dir: str = None,

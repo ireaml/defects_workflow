@@ -12,6 +12,16 @@ archer2:
       import_sys_environment: False
       # max_memory_kb: 100000000 # Dont sent memory limit for archer2
 
+# Imperial computers
+ic_young:
+      account: Gold
+      withmpi: True
+      resources:
+            parallel_env: mpi
+            tot_num_mpiprocs: 120 # 4o cores/node
+      max_wallclock_seconds: 43200 # 12 hours
+      max_memory_kb: 100000000
+
 # UCL computers
 # Thomas uses SGE: https://aiida.readthedocs.io/projects/aiida-core/en/latest/topics/schedulers.html#topics-schedulers-job-resources-par
 thomas:

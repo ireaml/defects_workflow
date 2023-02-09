@@ -1,14 +1,14 @@
 ALGO: Normal
 EDIFF: 1e-06 # global break condition for the electronic SC-loop
 EDIFFG: -0.01
-ENCUT: 500
+ENCUT: 450
 GGA: PE
 LHFCALC: .TRUE.
 AEXX: 0.25
 HFSCREEN: 0.2 # HSE06
 IBRION: 2
-ISIF: 1 # Constant cell shape and volume
-ISYM: 2 # Symmetry
+ISIF: 2 # Constant cell shape and volume
+ISYM: 2 # Symmetry on
 ISMEAR: 0 # Gaussian smearing
 ISPIN: 1 # non-spin polarized
 LCHARG: True # Write charge densities
@@ -16,6 +16,6 @@ LREAL: Auto # projection operators done in real space, fully automatic optimizat
 LWAVE: False
 NELM: 60 # max electronic steps
 NELMIN: 5
-NSW: 300
+NSW: 400
 PREC: Accurate
 SIGMA: 0.1 # width of the smearing in eV

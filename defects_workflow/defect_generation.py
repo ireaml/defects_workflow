@@ -17,7 +17,7 @@ from pymatgen.analysis.defects.generators import (
 from pymatgen.analysis.defects.core import Defect
 from pymatgen.analysis.defects.thermo import DefectEntry
 
-from aiida.orm import Dict, Float, Int, Bool, Str, StructureData, ArrayData
+from aiida.orm import Dict, Float, Int, Bool, Str, List, StructureData, ArrayData
 from aiida.engine import calcfunction, workfunction
 
 from shakenbreak.input import _get_defect_name_from_obj
@@ -30,6 +30,7 @@ def generate_defects(
     symprec: float=0.01,
     angle_tolerance: float=5,
     interstitial_min_dist: float=0.9,
+    defect_types: list[str]=["vacancies", "antisites", "interstitials"],
 ):
     """
     Generate all intrinsic defects for a given conventional or primitive
@@ -44,9 +45,11 @@ def generate_defects(
         Angle tolerance. Defaults to 5.
     interstitial_min_dist (float, optional):
         Minimum distance between interstitial atom and other atoms.
+    defect_type (list[str], optional):
+        List of defect types to generate. Defaults to ["vacancies", "antisites", "interstitials"].
 
     Returns:
-        defect_dict (dict): Dictionary of defects, with keys "vacancies", "antisites"
+        defect_dict (dict): Dictionary of Defects, with keys "vacancies", "antisites"
             and "interstitials".
     """
     # Check bulk primitive structure:
@@ -59,18 +62,21 @@ def generate_defects(
     ant_gen = AntiSiteGenerator(symprec=symprec, angle_tolerance=angle_tolerance,)
     int_gen = VoronoiInterstitialGenerator(min_dist=interstitial_min_dist, angle_tol=angle_tolerance,)
     # These are lists of Defect objects:
-    vacancies = vac_gen.get_defects(structure=prim_no_oxi.copy())
-    antisites = ant_gen.get_defects(structure=prim_no_oxi.copy())
-    interstitials = int_gen.get_defects(
-        structure=prim_no_oxi.copy(),
-        insert_species=[*map(str, prim.composition.elements)]
-    )
-    defects_dic = {
-        "vacancies": {_get_defect_name_from_obj(defect): defect for defect in vacancies},
-        "antisites": {_get_defect_name_from_obj(defect): defect for defect in antisites},
-        "interstitials": {_get_defect_name_from_obj(defect): defect for defect in interstitials}
-    }
-    return defects_dic
+    defects_dict = {}
+    if "vacancies" in defect_types:
+        defects_dict["vacancies"] = vac_gen.get_defects(structure=prim_no_oxi.copy())
+    if "antisites" in defect_types:
+        defects_dict["antisites"] = ant_gen.get_defects(structure=prim_no_oxi.copy())
+    if "interstitials" in defect_types:
+        defects_dict["interstitials"] = int_gen.get_defects(
+            structure=prim_no_oxi.copy(),
+            insert_species=[*map(str, prim.composition.elements)]
+        )
+    for defect_type, defect_list in defects_dict.items():
+        defects_dict[defect_type] = {
+            _get_defect_name_from_obj(defect): defect for defect in defect_list
+        }
+    return defects_dict
 
 
 def add_charge_states(
@@ -86,13 +92,16 @@ def add_charge_states(
 
     Args:
     defect_dict (dict):
-        Dictionary of defects.
+        Dictionary of Defects, with format:
+        {"vacancies": [Defect, ...], "interstitials": [...], "antisites": [],}
     charge_tolerance (float, optional):
         Tolerance for charge states. Defaults to 5(%).
 
     Returns:
     defect_dict (dict):
         Dictionary of defects with charge states specified in .user_charges attribute.
+        The format of the dictionary is:
+        {"vacancies": [Defect, ...], "interstitials": [...], "antisites": [],}
     """
     def _get_antisite_charges(site, sub, structure) -> list[int]:
         elements = [site.species.elements[0].symbol for site in structure]
@@ -122,7 +131,7 @@ def add_charge_states(
             return sorted(charges)
 
     for defect_type, defect_list in defect_dict.items():
-        if defect_type in ["Vacancy", "Interstitial"]:
+        if defect_type in ["vacancies", "interstitials"]:
             for defect in defect_list:
                 element = defect.defect_site.species.elements[0].symbol
                 selected_charges = get_charges(
@@ -139,6 +148,8 @@ def add_charge_states(
             defect.user_charges = _get_antisite_charges(
                 site=original_symbol, sub=sub_symbol, structure=defect.structure
             )
+        else:
+            raise ValueError(f"Defect type {defect_type} not recognised.")
     return defect_dict
 
 
@@ -225,6 +236,7 @@ def generate_defect_entries(
 @calcfunction
 def generate_supercell_n_defects(
     bulk: StructureData,
+    defect_types: List[str]=List(['vacancies', 'interstitials', 'antisites']),
     symprec: Float=Float(0.01),
     angle_tolerance: Int=Int(5),
     interstitial_min_dist: Float=Float(1.0),
@@ -234,7 +246,7 @@ def generate_supercell_n_defects(
     max_atoms: Int = Int(140),
     min_length: Float = Float(10),
     force_diagonal: Bool = Bool(False),
-):
+) -> Dict:
     """Generate defects and setup supercell.
 
     Args:
@@ -269,8 +281,16 @@ def generate_supercell_n_defects(
         bulk.get_pymatgen_structure(),
         symprec,
         angle_tolerance,
-        interstitial_min_dist
+        interstitial_min_dist,
+        defect_types,
     )
+    # Add charge states, based on common element oxi states
+    defects_dict = add_charge_states(
+        defect_dict=defects_dict,
+        charge_tolerance=5,
+    )
+    # Generate supercell defect structure, and refactor
+    # Defect to DefectEntry objects
     defect_entries_dict = generate_defect_entries(
         defects_dict=defects_dict,
         sc_mat=sc_mat,
@@ -283,6 +303,7 @@ def generate_supercell_n_defects(
     return Dict(dict=defect_entries_dict)
 
 
+@calcfunction
 def sort_interstitials_for_screening(defects_dict: Dict):
     """
     Loop over defects_dict to identify interstitials of the
