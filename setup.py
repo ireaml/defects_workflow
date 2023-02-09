@@ -13,7 +13,7 @@ path_to_file = os.path.dirname(os.path.abspath(__file__))
 setup(
     name="defects_workflow",
     version="0.0.1",
-    description="Package to run defect calculations with AiiDA",
+    description="Package to run defect structure searching with AiiDA",
     author="Irea Mosquera-Lois",
     author_email="i.mosquera-lois22@imperial.ac.uk",
     maintainer="Irea Mosquera-Lois",

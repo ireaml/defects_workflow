@@ -74,6 +74,15 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             help="Whether to screen interstitials."
         )
         spec.input(
+            "num_nodes",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(1),
+            help=("Number of nodes to use for relaxations. "
+            "Recommended values: 1 using archer2, 2 if using Young "
+            "(e.g. to get aorund 60-100 cores).")
+        )
+        spec.input(
             'symmetry_tolerance',
             valid_type=orm.Float,
             required=False,
@@ -172,15 +181,15 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         num_machines: int,
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
-        time_in_hours: int=24,
+        time_in_hours: int=12,
     ):
         """Setup options for HPC with aiida."""
-        setup_options(
-            hpc_string,
-            num_machines,
-            num_mpiprocs_per_machine,
-            num_cores_per_machine,
-            time_in_hours
+        return setup_options(
+            hpc_string=hpc_string,
+            num_machines=num_machines,
+            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
+            num_cores_per_machine=num_cores_per_machine,
+            time_in_hours=time_in_hours
         )
 
     def setup_settings(self, calc_type: str="snb"):
@@ -303,14 +312,25 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         # Setup KpointsData
         self.ctx.gam_kpts = setup_gamma_kpoints()
 
+        # Setup HPC options:
+        self.ctx.number_cores_per_machine = self._setup_number_cores_per_machine(
+            hpc_string=self.ctx.hpc_string
+        )
+        self.ctx.num_nodes = self.inputs.num_nodes
+        self.ctx.options = self.setup_options(
+            hpc_string=self.ctx.hpc_string,
+            num_machines=self.ctx.num_nodes,
+            num_cores_per_machine=self.ctx.number_cores_per_machine,
+            num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+        )
+        # Setup settings for screening
+        settings = self.setup_settings(calc_type="screening")
+
         # Submit geometry optimisations for all interstitials at the same time:
         for general_int_name, defect_entry_dict in self.ctx.int_dict.items():
             for defect_name, defect_entry in defect_entry_dict.items():
                 structure = defect_entry.sc_entry.structure
                 # Submit relaxation (gamma point):
-                # Setup settings for screening
-                settings = self.setup_settings(calc_type="screening")
-                # Submit workchain:
                 workchain, inputs = setup_relax_inputs(
                     code_string=self.inputs.code_string_vasp_gam,
                     # aiida config:
@@ -323,7 +343,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     use_default_incar_settings=False,
                     shape=False,
                     volume=False,
-                    ionic_steps=300,
+                    ionic_steps=600,
                     # Labels:
                     workchain_label=f"screen_{defect_name}",  # eg Te_i_s32
                 )
@@ -354,7 +374,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 key = f"screen.{defect_name}"
                 self.validate_finished_workchain(workchain_name=key)
                 # Parse final energy
-                energies[defect_name] = self.parse_final_energy(workchain=self.ctx[key].value)
+                energies[defect_name] = self.parse_final_energy(workchain=self.ctx[key])
             # Compare energies:
             lowest_energy = min(energies.values())
             for defect_name, energy in energies.items():
@@ -443,7 +463,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                         use_default_incar_settings=False,
                         shape=False,
                         volume=False,
-                        ionic_steps=300,
+                        ionic_steps=600,
                         # Labels:
                         workchain_label=f"snb.{defect_name}.{charge}.{dist_name}",  # e.g. snb.Te_i_s32.0.Unperturbed
                     )
@@ -465,8 +485,8 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             out_dict[defect_name] = {}
             for charge in dist_dict["charges"]:
                 out_dict[defect_name][charge] = {}
-                for dist_name, structure in (
-                    dist_dict["charges"][charge]["structures"]["distortions"].items()
+                for dist_name in (
+                    dist_dict["charges"][charge]["structures"]["distortions"]
                 ):
                     # Validate and parse outputs (structure, energy, traj, forces, stress)
                     key = f"snb.{defect_name}.{charge}.{dist_name}"
