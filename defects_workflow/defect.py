@@ -26,7 +26,13 @@ from defects_workflow.utils import (
     compare_structures
 )
 from defects_workflow.relaxation import setup_relax_inputs
-from defects_workflow.defect_generation import generate_supercell_n_defects, sort_interstitials_for_screening
+from defects_workflow.defect_generation import (
+    setup_defects,
+    setup_defect_charge_states,
+    setup_defect_supercells,
+    sort_interstitials_for_screening
+)
+
 from defects_workflow.vasp_input import setup_incar_snb
 
 
@@ -57,11 +63,11 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             required=False,
             help='The host structure (primitive or conventional).'
         )
-        spec.inputs(
+        spec.input(
             "defect_types",
             valid_type=orm.List,
             required=False,
-            defailt=orm.List(['vacancies', 'interstitials', 'antisites']),
+            default=orm.List(['vacancies', 'interstitials', 'antisites']),
             help=("List of defect types to generate. "
                 "E.g: orm.List(['vacancies', 'interstitials', 'antisites'])"
             )
@@ -86,6 +92,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             'symmetry_tolerance',
             valid_type=orm.Float,
             required=False,
+            default=orm.Float(0.01),
             help='Symmetry tolerance for space group analysis on the input structure.',
         )
         spec.input(
@@ -107,7 +114,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             'code_string_vasp_gam',
             valid_type=orm.Str,
             required=False,
-            default="vasp_gam_6.3.0", # default is archer2
+            default=orm.Str("vasp_gam_6.3.0"), # default is archer2
             help='Code string for vasp_gam',
         )
         # Specify outputs:
@@ -118,6 +125,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             valid_type=orm.Dict,
             required=False,
         )
+        # Exit codes:
         spec.exit_code(
             0,
             'NO_ERROR',
@@ -260,17 +268,24 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         # Generate defects with pymatgen-analysis-defects
         relaxed_structure = self.inputs.structure
-        defects_dict = generate_supercell_n_defects(
+        defects_dict = setup_defects(
             bulk=relaxed_structure,
             defect_types=self.inputs.defect_types,
+            interstitial_min_dist=orm.Float(1.0),
+        )  # type orm.Dict (not dict!)
+
+        defects_dict_with_charges = setup_defect_charge_states(
+            defects_dict=defects_dict
+        )
+        defects_dict = setup_defect_supercells(
+            defect_dict=defects_dict_with_charges,
             min_length=self.inputs.supercell_min_length,
             symprec=self.inputs.symmetry_tolerance,
             min_atoms=orm.Int(30),
             max_atoms=self.inputs.supercell_max_number_atoms,
             force_diagonal=orm.Bool(False),
-            interstitial_min_dist=orm.Float(1.0),
             dummy_species=orm.Str("X"),  # to keep track of frac coords in sc
-        )  # type orm.Dict (not dict!)
+        )
         self.ctx.defects_dict = defects_dict.get_dict()  # as python dict, easier for postprocessing
 
 
@@ -332,7 +347,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 structure = defect_entry.sc_entry.structure
                 # Submit relaxation (gamma point):
                 workchain, inputs = setup_relax_inputs(
-                    code_string=self.inputs.code_string_vasp_gam,
+                    code_string=self.inputs.code_string_vasp_gam.value,
                     # aiida config:
                     options=self.ctx.options,
                     settings=settings,
@@ -451,7 +466,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 ):
                     # Submit relaxation (gamma point):
                     workchain, inputs = setup_relax_inputs(
-                        code_string=self.inputs.code_string_vasp_gam,
+                        code_string=self.inputs.code_string_vasp_gam.value,
                         # aiida config:
                         options=self.ctx.options,
                         settings=settings,

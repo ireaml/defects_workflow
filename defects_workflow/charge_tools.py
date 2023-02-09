@@ -1,18 +1,19 @@
 """
 Reproduced from https://github.com/alexsquires/defectivator/blob/main/defectivator/tools.py
+(will later introduced as dependency)
 """
 
 import numpy as np
 import pandas as pd
-from defectivator.interstitials import InterstitialMap
 from copy import deepcopy
 import os
 
-_ROOT = os.path.abspath(os.path.dirname(__file__))
-def get_data(path):
-    return os.path.join(_ROOT, 'data', path)
+MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-data = get_data('charges.csv')
+def get_data(path):
+    return os.path.join(MODULE_DIR , 'yaml_files', path)
+
+data = get_data('common_oxi_states.csv')
 
 def extend_list_to_zero(l: list) -> np.array:
     """

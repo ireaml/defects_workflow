@@ -34,6 +34,7 @@ setup(
         "pymatgen-analysis-defects>=2022.10.28",
         "seaborn",
         "shakenbreak>=23.1.3",
+        "defectivator",
         "mpcontribs-client"
     ]
 )

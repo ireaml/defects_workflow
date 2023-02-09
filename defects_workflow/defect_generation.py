@@ -25,7 +25,7 @@ from shakenbreak.input import _get_defect_name_from_obj
 from defects_workflow.charge_tools import get_charges, group_ions, extend_list_to_zero
 
 
-def generate_defects(
+def _generate_defects(
     bulk: Structure | StructureData,
     symprec: float=0.01,
     angle_tolerance: float=5,
@@ -50,7 +50,8 @@ def generate_defects(
 
     Returns:
         defect_dict (dict): Dictionary of Defects, with keys "vacancies", "antisites"
-            and "interstitials".
+            and "interstitials". Each key contains a dictionary of Defect objects:
+            {"vacancies": {defect_name: Defect, ...}, "antisites": {...}, "interstitials": {...},
     """
     # Check bulk primitive structure:
     if isinstance(bulk, StructureData):
@@ -101,7 +102,7 @@ def add_charge_states(
     defect_dict (dict):
         Dictionary of defects with charge states specified in .user_charges attribute.
         The format of the dictionary is:
-        {"vacancies": [Defect, ...], "interstitials": [...], "antisites": [],}
+        {"vacancies": {defect_name: Defect, ...}, "antisites": {...}, "interstitials": {...},
     """
     def _get_antisite_charges(site, sub, structure) -> list[int]:
         elements = [site.species.elements[0].symbol for site in structure]
@@ -130,24 +131,24 @@ def add_charge_states(
                 charges = extend_list_to_zero(charges)
             return sorted(charges)
 
-    for defect_type, defect_list in defect_dict.items():
+    for defect_type, defect_subdict in defect_dict.items():
         if defect_type in ["vacancies", "interstitials"]:
-            for defect in defect_list:
+            for defect in defect_subdict.values():
                 element = defect.defect_site.species.elements[0].symbol
                 selected_charges = get_charges(
                     atom=element,
                     charge_tol=charge_tolerance
                 )
-                for defect in defect_dict[defect_type]:
-                    defect.user_charges = selected_charges
+                defect.user_charges = selected_charges
         elif defect_type  == "antisites":
             # For antisites, charges depend on the original/bulk and
             # substitution site
-            original_symbol = defect.defect_site.species.elements[0].symbol
-            sub_symbol = defect.site.species.elements[0].symbol
-            defect.user_charges = _get_antisite_charges(
-                site=original_symbol, sub=sub_symbol, structure=defect.structure
-            )
+            for defect in defect_subdict.values():
+                original_symbol = defect.defect_site.species.elements[0].symbol
+                sub_symbol = defect.site.species.elements[0].symbol
+                defect.user_charges = _get_antisite_charges(
+                    site=original_symbol, sub=sub_symbol, structure=defect.structure
+                )
         else:
             raise ValueError(f"Defect type {defect_type} not recognised.")
     return defect_dict
@@ -234,30 +235,70 @@ def generate_defect_entries(
 
 
 @calcfunction
-def generate_supercell_n_defects(
+def setup_defects(
     bulk: StructureData,
     defect_types: List[str]=List(['vacancies', 'interstitials', 'antisites']),
     symprec: Float=Float(0.01),
     angle_tolerance: Int=Int(5),
     interstitial_min_dist: Float=Float(1.0),
-    sc_mat: ArrayData | None = None,
-    dummy_species: Str | None = None,
-    min_atoms: Int = Int(30),
-    max_atoms: Int = Int(140),
-    min_length: Float = Float(10),
-    force_diagonal: Bool = Bool(False),
 ) -> Dict:
-    """Generate defects and setup supercell.
+    """Generate defects, add defect charge states and setup supercell.
 
     Args:
         bulk (StructureData):
             Bulk structure.
+        defect_types (List[str], optional):
+            List of defect types to generate.
+            Defaults to List(['vacancies', 'interstitials', 'antisites']).
         symprec (Float, optional):
             Symmetry precision. Defaults to Float(0.01).
         angle_tolerance (Int, optional):
             Angle tolerance. Defaults to Int(5).
         interstitial_min_dist (Float, optional):
             Minimum distance for interstitials. Defaults to Float(0.9).
+
+    Returns:
+        Dict: Dictionary of Defects, with keys "vacancies", "antisites" and
+            "interstitials", e.g.:
+            {"vacancies": [defect_name: [Defect, Defect,] ...],
+            "antitists": [defect_name: [Defect, Defect,], ...], ...}
+    """
+    defects_dict = _generate_defects(
+        bulk.get_pymatgen_structure(),
+        symprec.value,
+        angle_tolerance.value,
+        interstitial_min_dist.value,
+        defect_types.get_list(),
+    )
+    return Dict(dict=defects_dict)
+
+
+@calcfunction
+def setup_defect_charge_states(
+    defects_dict: Dict,
+    charge_tolerance: Int=Int(5),
+) -> Dict:
+    """Add charge states, based on common element oxi states"""
+    defects_dict = add_charge_states(
+        defect_dict=defects_dict.get_dict(),
+        charge_tolerance=charge_tolerance.value,
+    )
+    return Dict(dict=defects_dict)
+
+
+@calcfunction
+def setup_defect_supercells(
+    defects_dict: Dict,
+    sc_mat: ArrayData | None = None,
+    dummy_species: Str | None = Str("X"),
+    min_atoms: Int = Int(30),
+    max_atoms: Int = Int(150),
+    min_length: Float = Float(10),
+    force_diagonal: Bool = Bool(False),
+) -> Dict:
+    """Generate supercell defect structure, and refactor Defect to DefectEntry objects
+
+    Args:
         sc_mat (ArrayData, optional):
             Supercell matrix. Defaults to None.
         dummy_species (Str, optional):
@@ -272,33 +313,19 @@ def generate_supercell_n_defects(
             Force diagonal supercell. Defaults to Bool(False
 
     Returns:
-        Dict: Dictionary of DefectEntries, with keys "vacancies", "antisites" and
+        Dict: Dictionary of DefectEntry's, with keys "vacancies", "antisites" and
             "interstitials", e.g.:
             {"vacancies": [defect_name: [DefectEntry, DefectEntry,] ...],
             "antitists": [defect_name: [DefectEntry, DefectEntry,], ...], ...}
     """
-    defects_dict = generate_defects(
-        bulk.get_pymatgen_structure(),
-        symprec,
-        angle_tolerance,
-        interstitial_min_dist,
-        defect_types,
-    )
-    # Add charge states, based on common element oxi states
-    defects_dict = add_charge_states(
-        defect_dict=defects_dict,
-        charge_tolerance=5,
-    )
-    # Generate supercell defect structure, and refactor
-    # Defect to DefectEntry objects
     defect_entries_dict = generate_defect_entries(
-        defects_dict=defects_dict,
-        sc_mat=sc_mat,
-        dummy_species=dummy_species,
-        min_atoms=min_atoms,
-        max_atoms=max_atoms,
-        min_length=min_length,
-        force_diagonal=force_diagonal,
+        defects_dict=defects_dict.get_dict(),
+        sc_mat=sc_mat.get_array(),
+        dummy_species=dummy_species.value,
+        min_atoms=min_atoms.value,
+        max_atoms=max_atoms.value,
+        min_length=min_length.value,
+        force_diagonal=force_diagonal.value,
     )
     return Dict(dict=defect_entries_dict)
 
