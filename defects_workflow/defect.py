@@ -94,6 +94,20 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             help='Symmetry tolerance for space group analysis on the input structure.',
         )
         spec.input(
+            'charge_tolerance',
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(13),
+            help=(
+                "Tolerance for determining charge states of defects. "
+                "The charges are only considered if they represent greater "
+                "than `charge_tolerance`% of all the oxidation states of the atoms in the ICSD "
+                "data taken from: `doi.org/10.1021/acs.jpclett.0c02072`."
+                "(e.g. he smaller the value, the more charge states will be considered.) "
+                "It has been tested and values within 5-13% are reasonable."
+            ),
+        )
+        spec.input(
             "supercell_min_length",
             valid_type=orm.Float,
             required=False,
@@ -276,6 +290,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             force_diagonal=orm.Bool(False),
             interstitial_min_dist=orm.Float(1.0),
             dummy_species=orm.Str("X"),  # to keep track of frac coords in sc
+            charge_tolerance=self.inputs.charge_tolerance,
         )  # type orm.Dict (not dict!)
         self.ctx.defects_dict = defects_dict.get_dict()  # as python dict, easier for postprocessing
 
@@ -533,7 +548,7 @@ def parse_snb_workchain(workchain) -> orm.Dict:
 @calcfunction
 def apply_shakenbreak(defects_Dict: orm.Dict) -> orm.Dict:
     """Apply ShakeNBreak to defects dictionary"""
-    # Refactor to dict of defect
+    # Refactor to dict of DefectEntry's (e.g. remove defect_type classification)
     defects_dict = defects_Dict.get_dict()
     snb_defects = {
         k: v for d in defects_dict.values() for k, v in d.items()

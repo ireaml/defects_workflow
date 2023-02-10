@@ -25,6 +25,7 @@ from shakenbreak.input import _get_defect_name_from_obj
 #from defects_workflow.charge_tools import get_charges, group_ions, extend_list_to_zero
 from defectivator.tools import get_charges, group_ions, extend_list_to_zero
 
+
 def _generate_defects(
     bulk: Structure | StructureData,
     symprec: float=0.01,
@@ -82,7 +83,7 @@ def _generate_defects(
 
 def add_charge_states(
     defect_dict: dict,
-    charge_tolerance: float=25,
+    charge_tolerance: float=13,
 ):
     """Specify the charge states for each defect, storing them under the
     .user_charges attibute.
@@ -167,8 +168,8 @@ def add_charge_states(
 def generate_defect_entries(
     defects_dict: dict,
     sc_mat: np.ndarray | None = None,
-    dummy_species: str | None = None,
-    min_atoms: int = 80,
+    dummy_species: str | None = "X",
+    min_atoms: int = 40,
     max_atoms: int = 140,
     min_length: float = 10,
     force_diagonal: bool = False,
@@ -203,6 +204,7 @@ def generate_defect_entries(
     ):
         """Assuming defect supercell has been generated with dummy atom"""
         # Get defect frac coords in supercell
+        supercell_struct = supercell_struct.copy() # Don't want to modify original!
         sc_defect_frac_coords = supercell_struct.pop(-1).frac_coords  # Added at the end
         sc_entry = ComputedStructureEntry(
             structure=supercell_struct,
@@ -223,6 +225,7 @@ def generate_defect_entries(
     for key, value in defects_dict.items():  # for defect type (e.g. vacancies)
         defect_entries = {}
         for defect_name, defect in value.items():
+            # Get supercell only once for each defect (no need to repeat for charge states)
             supercell_struct = defect.get_supercell_structure(
                 sc_mat=sc_mat,
                 dummy_species=dummy_species,  # for vacancies, to get defect frac coords in supercell
@@ -230,7 +233,7 @@ def generate_defect_entries(
                 min_atoms=min_atoms,
                 min_length=min_length,
                 force_diagonal=force_diagonal,
-            )
+            ).copy()
             defect_entries[defect_name] = []
             for charge_state in defect.user_charges:
                 defect_entries[defect_name].append(
@@ -248,17 +251,20 @@ def generate_defect_entries(
 def generate_supercell_n_defects(
     bulk: StructureData,
     defect_types: List[str]=List(['vacancies', 'interstitials', 'antisites']),
-    symprec: Float=Float(0.01),
+    symprec: Float=Float(0.01),  # default in pmg.analysis.defects
     angle_tolerance: Int=Int(5),
     interstitial_min_dist: Float=Float(1.0),
     sc_mat: ArrayData | None = None,
-    dummy_species: Str | None = None,
-    min_atoms: Int = Int(30),
+    dummy_species: Str | None = "V",
+    min_atoms: Int = Int(20),
     max_atoms: Int = Int(140),
     min_length: Float = Float(10),
     force_diagonal: Bool = Bool(False),
+    charge_tolerance: Float = Float(13),
 ) -> Dict:
-    """Generate defects and setup supercell.
+    """Generate defects, add reasonable charge states (based on common
+    elemenet oxidation states) and setup supercell.
+
     Args:
         bulk (StructureData):
             Bulk structure.
@@ -280,35 +286,50 @@ def generate_supercell_n_defects(
             Minimum length of supercell. Defaults to Float(10).
         force_diagonal (Bool, optional):
             Force diagonal supercell. Defaults to Bool(False
+
     Returns:
         Dict: Dictionary of DefectEntries, with keys "vacancies", "antisites" and
             "interstitials", e.g.:
             {"vacancies": [defect_name: [DefectEntry, DefectEntry,] ...],
             "antitists": [defect_name: [DefectEntry, DefectEntry,], ...], ...}
     """
+    #(Note that the 3 steps (generation, charges & supercell setup) are
+    # done in one calcfunction because DefectEntry/Defect
+    # objects need to be converted to dicts for aiida to store them.)
+
     defects_dict = _generate_defects(
         bulk.get_pymatgen_structure(),
-        symprec,
-        angle_tolerance,
-        interstitial_min_dist,
-        defect_types,
+        symprec.value,
+        angle_tolerance.value,
+        interstitial_min_dist.value,
+        defect_types.get_list(),
     )
     # Add charge states, based on common element oxi states
     defects_dict = add_charge_states(
         defect_dict=defects_dict,
-        charge_tolerance=5,
+        charge_tolerance=charge_tolerance.value,
     )
     # Generate supercell defect structure, and refactor
     # Defect to DefectEntry objects
     defect_entries_dict = generate_defect_entries(
         defects_dict=defects_dict,
-        sc_mat=sc_mat,
-        dummy_species=dummy_species,
-        min_atoms=min_atoms,
-        max_atoms=max_atoms,
-        min_length=min_length,
-        force_diagonal=force_diagonal,
+        sc_mat=sc_mat.get_array() if sc_mat else None,
+        dummy_species=dummy_species.value,
+        min_atoms=min_atoms.value,
+        max_atoms=max_atoms.value,
+        min_length=min_length.value,
+        force_diagonal=force_diagonal.value,
     )
+    # Transform DefectEntry to dict -> Dict (for AiiDA)
+    for key, value_dict in defect_entries_dict.items():  # for defect type (e.g. vacancies)
+        defect_entries_aiida = {}
+        for defect_name, defect_entry_list in value_dict.items():
+            defect_entries_aiida[defect_name] = []
+            for defect_entry in defect_entry_list:
+                defect_entries_aiida[defect_name].append(
+                    defect_entry.as_dict()
+            )
+        defect_entries_dict[key] = deepcopy(defect_entries_aiida)  # for each defect type, dict of DefectEntries
     return Dict(dict=defect_entries_dict)
 
 
