@@ -15,6 +15,7 @@ from aiida.tools.groups import GroupPath
 
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.vasp.sets import  VaspInputSet
+from pymatgen.analysis.defects.thermo import DefectEntry
 
 from shakenbreak.input import Distortions
 
@@ -27,7 +28,7 @@ from defects_workflow.utils import (
 )
 from defects_workflow.relaxation import setup_relax_inputs
 from defects_workflow.defect_generation import (
-    generate_supercell_n_defects,
+    generate_defects,
     sort_interstitials_for_screening
 )
 
@@ -48,11 +49,16 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         spec.outline(
             cls.generate_defects,
-            if_(cls.should_run_screening)(cls.screen_interstitials, cls.analyse_screening_results),
+            if_(cls.should_run_screening)(
+                cls.screen_interstitials,
+                cls.analyse_screening_results
+            ),
             cls.apply_shakenbreak,
-            cls.relax_defects,
-            cls.parse_snb_relaxations,
-            cls.results,
+            if_(cls.should_submit_relax)(
+                cls.relax_defects,
+                cls.parse_snb_relaxations,
+                cls.results,
+            ),
         )
 
         spec.input(
@@ -121,6 +127,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Int(200),
             help="The maximum number of atoms when generating supercell."
         )
+        spec.input(
+            "supercell_min_number_atoms",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(30),
+            help="The minimum number of atoms when generating supercell."
+        )
         # Code/HPC:
         spec.input(
             'code_string_vasp_gam',
@@ -128,6 +141,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             required=False,
             default=orm.Str("vasp_gam_6.3.0"), # default is archer2
             help='Code string for vasp_gam',
+        )
+        spec.input(
+            'submit_relaxations',
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True), # default is archer2
+            help='Whether to submit relaxations of defects.',
         )
         # Specify outputs:
         # Structures, Trajectories and forces for
@@ -139,6 +159,11 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         )
         spec.output(
             "defect_entries_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
+        spec.output(
+            "distortions_dict",
             valid_type=orm.Dict,
             required=False,
         )
@@ -173,6 +198,10 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             return True
         else:
             return False
+
+    def should_submit_relax(self):
+        """Whether to submit relaxations"""
+        return self.inputs.submit_relaxations
 
     def setup_composition(self, structure_data: orm.StructureData):
         """Setup composition."""
@@ -281,16 +310,18 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     def generate_defects(self):
         """Generate defects."""
 
-        self.report("generate_defects")
+        self.report(
+            "Generating defects, adding charge states & setting up supercells."
+        )
 
         # Generate defects with pymatgen-analysis-defects
         relaxed_structure = self.inputs.structure
-        defects_dict_aiida = generate_supercell_n_defects(
+        defects_dict_aiida = generate_defects(
             bulk=relaxed_structure,
             defect_types=self.inputs.defect_types,
             min_length=self.inputs.supercell_min_length,
             symprec=self.inputs.symmetry_tolerance,
-            min_atoms=orm.Int(30),
+            min_atoms=self.inputs.supercell_min_number_atoms,
             max_atoms=self.inputs.supercell_max_number_atoms,
             force_diagonal=orm.Bool(False),
             interstitial_min_dist=orm.Float(1.0),
@@ -300,9 +331,12 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
         # should refactor to DefectEntrys here
 
-        self.ctx.defects_dict_aiida = deepcopy(defects_dict_aiida)  # store for output
+        self.ctx.defects_dict_aiida = defects_dict_aiida
         self.out("defect_entries_dict", defects_dict_aiida)
-        self.ctx.defects_dict = refactor_defects_dict(defects_dict_aiida).get_dict()  # as python dict, easier for postprocessing
+
+        # self.ctx.defects_dict = refactor_defects_dict(
+        #     deepcopy(defects_dict_aiida.get_dict())
+        # )  # as python dict, easier for postprocessing
 
 
     def screen_interstitials(self):
@@ -321,12 +355,12 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         self.ctx.composition = self.setup_composition(self.inputs.structure)
 
         # Get interstitials with sym ineq configurations (@calcfunction):
-        self.ctx.int_dict = sort_interstitials_for_screening(
-            orm.Dict(self.ctx.defects_dict)
-        ).get_dict()  # as python dict
+        self.ctx.int_dict_aiida = sort_interstitials_for_screening(
+            orm.Dict(self.ctx.defects_dict_aiida)
+        ).get_dict()  # as python dict, with DefectEntry_as_dicts!
 
         # Get incar (same for all sym ineq interstitials)
-        structure = list(list(self.ctx.int_dict.values())[0].values())[0].sc_entry.structure
+        structure = list(list(self.ctx.int_dict_aiida.values())[0].values())[0]["sc_entry"]["structure"]
         # Update ncore based on hpc of code:
         self.ctx.hpc_string = self._determine_hpc()
         self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
@@ -358,9 +392,9 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         settings = self.setup_settings(calc_type="screening")
 
         # Submit geometry optimisations for all interstitials at the same time:
-        for general_int_name, defect_entry_dict in self.ctx.int_dict.items():
+        for general_int_name, defect_entry_dict in self.ctx.int_dict_aiida.items():
             for defect_name, defect_entry in defect_entry_dict.items():
-                structure = defect_entry.sc_entry.structure
+                structure = defect_entry["sc_entry"]["structure"]
                 # Submit relaxation (gamma point):
                 workchain, inputs = setup_relax_inputs(
                     code_string=self.inputs.code_string_vasp_gam.value,
@@ -398,7 +432,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         self.report("analyse_interstitial_screening_results")
 
         # Loop over element speific interstitials: (Te_i, Cd_i)
-        for defect_entry_dict in self.ctx.int_dict.values():
+        for defect_entry_dict in self.ctx.int_dict_aiida.values():
             energies = {}  # defect_name: energy of interstitial
             for defect_name in defect_entry_dict:
                 # Validate workchains
@@ -411,7 +445,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             for defect_name, energy in energies.items():
                 if abs(lowest_energy) - abs(energy) > 1:
                     # too high in energy, remove from dict
-                    self.ctx.defects_dict["interstitials"].pop(defect_name, None)
+                    self.ctx.defects_dict_aiida["interstitials"].pop(defect_name, None)
                 elif [
                     abs(energy - stored_energy) < 0.1 for stored_energy in energies.values()
                 ]:
@@ -431,26 +465,32 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                         workchain=self.ctx[f"screen.{other_defect_name}"]
                     )
                     if compare_structures(structure_1, structure_2):
-                        self.ctx.defects_dict["interstitials"].pop(defect_name, None)
+                        self.ctx.defects_dict_aiida["interstitials"].pop(defect_name, None)
 
 
     def apply_shakenbreak(self):
         """Apply ShakeNBreak."""
-        self.report("apply_shakenbreak")
-        self.ctx.distorted_dict, metadata_dict = apply_shakenbreak(  # calcfunction
-            defects_Dict=orm.Dict(self.ctx.defects_dict)
+        self.report("Applying shakenbreak")
+
+        distorted_dict_aiida, metadata_dict = apply_shakenbreak(  # calcfunction
+            defects_Dict=orm.Dict(
+                self.ctx.defects_dict_aiida
+            ) # with all pmg objects as dicts
         )
-        self.ctx.distorted_dict = self.ctx.distorted_dict.get_dict()  # as dict
+        self.ctx.distorted_dict_aiida = distorted_dict_aiida.get_dict()
+        self.out("distortions_dict", distorted_dict_aiida)
+         # as dict, but
+        # with all seriliazable objects as dicts
         # This orm.Dict is formatted like:
         # {defect_name: {
-        #    "defect_site":,
-        #    "defect_type":,
+        #    "defect_site": Site_as_dict,
+        #    "defect_type": Site_as_dict,
         #    "defect_multiplicity: ,
         #    "defect_supercell_site": ,
         #    "charges": {
         #        charge: {
         #             "structures": {
-        #                "Unperturbed": Structure,
+        #                "Unperturbed": Structure_as_dict,
         #                "distortions": {"Bond_Distortion_-60.0%": Structure,}
         #             }
         #        }
@@ -463,11 +503,14 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         self.report("relax_defects")
         # Setup settings
         settings = self.setup_settings(calc_type="snb")
-        distorted_dict = self.ctx.distorted_dict.get_dict()
+        distorted_dict = self.ctx.distorted_dict_aiida # all pmg objects as dicts
         # Loop over defects, charge states & distortions:
         for defect_name, dist_dict in distorted_dict.items():
             for charge in dist_dict["charges"]:
-                # Get incar of neutral state (for screening only need neutral)
+                # Get incar for unperturbed (same for all distorted structures)
+                structure = Structure.from_dict(
+                    dist_dict["charges"][charge]["structures"]["Unperturbed"]
+                )  # dict -> Structure
                 defect_relax_set_dict = setup_incar_snb(  # calcfunction
                     supercell=orm.StructureData(pymatgen=structure),
                     charge=orm.Int(charge),
@@ -479,7 +522,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 # Submit unperturbed structure:
 
                 # Submit each distortion:
-                for dist_name, structure in zip(
+                for dist_name, structure_as_dict in zip(
                     # Names:
                     [
                         "Unperturbed",
@@ -489,7 +532,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                             "distortions"
                         ].keys()
                     ),
-                    # Structures:
+                    # Structures (as dicts):
                     [dist_dict["charges"][charge]["structures"]["Unperturbed"]]
                     + list(
                         dist_dict["charges"][charge]["structures"][
@@ -498,6 +541,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     ),
                 ):
                     # Submit relaxation (gamma point):
+                    structure = Structure.from_dict(structure_as_dict)  # dict -> Structure
                     workchain, inputs = setup_relax_inputs(
                         code_string=self.inputs.code_string_vasp_gam.value,
                         # aiida config:
@@ -541,11 +585,11 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         }
         """
         self.report("parse_snb_relaxations")
-        distorted_dict = self.ctx.distorted_dict
+        distorted_dict = self.ctx.distorted_dict_aiida  # all pmg objects as dicts
         out_dict = {}
         for defect_name, dist_dict in distorted_dict.items():
             out_dict[defect_name] = {
-                "defect_entries": self.ctx.defects_dict_aiida[defect_name],  # list with DefectEntry for all charge states
+                "defect_entries": self.ctx.defects_dict_aiida[defect_name],  # list with DefectEntry_as_dict for all charge states
                 "charges": {},
             }
             for charge in dist_dict["charges"]:
@@ -572,26 +616,17 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         The output dictionary has the following format:
         {defect_name: {charge: {dist_name: {"pk":, "structure": , etc}, }}}
         """
-        self.out("results", self.ctx.out_dict)
+        if "out_dict" not in self.ctx:
+            self.report("No results to attach. Workchain failed.")
+        else:
+            self.out("results", self.ctx.out_dict)
+            self.report("Completed collecting ShakeNBreak results, workchain finished.")
+
 
 
 # Below are the functions and calcfunctions used withing the above workchain
 # See https://aiida.readthedocs.io/projects/aiida-core/en/v2.2.1/topics/
 # workflows/concepts.html#topics-workflows-concepts-workchains
-
-def refactor_defects_dict(defect_entries_dict: dict) -> dict:
-    # Transform DefectEntry_as_dict -> DefectEntry object
-    for key, value_dict in defect_entries_dict.items():  # for defect type (e.g. vacancies)
-        defect_entries_aiida = {}
-        for defect_name, defect_entry_list in value_dict.items():
-            defect_entries_aiida[defect_name] = []
-            for defect_entry_as_dict in defect_entry_list:
-                defect_entries_aiida[defect_name].append(
-                    DefectEntry.from_dict(defect_entry_as_dict)
-            )
-        defect_entries_dict[key] = deepcopy(defect_entries_aiida)  # for each defect type, dict of DefectEntries
-    return defect_entries_dict
-
 
 @calcfunction
 def parse_snb_workchain(workchain) -> orm.Dict:
@@ -612,8 +647,10 @@ def parse_snb_workchain(workchain) -> orm.Dict:
 @calcfunction
 def apply_shakenbreak(defects_Dict: orm.Dict) -> orm.Dict:
     """Apply ShakeNBreak to defects dictionary"""
-    # Refactor to dict of DefectEntry's (e.g. remove defect_type classification)
-    defects_dict = defects_Dict.get_dict()
+    # 1. Refactor from dict to DefectEntry
+    defects_dict = defects_Dict.get_dict() # DefectEntry's as dict
+    defects_dict = refactor_defects_dict(defects_dict)
+    # 2. Refactor to remove defect_type classification
     snb_defects = {
         k: v for d in defects_dict.values() for k, v in d.items()
     }
@@ -634,5 +671,61 @@ def apply_shakenbreak(defects_Dict: orm.Dict) -> orm.Dict:
     #        }
     #    }
     # }
-    return orm.Dict(dict=distorted_dict), orm.Dict(dict=metadata_dict)
+    # Refactor dict to be compatible with aiida
+    distorted_dict_aiida = refactor_distortion_dict(distorted_dict)
+    return (
+        orm.Dict(dict=distorted_dict_aiida),
+        orm.Dict(dict=metadata_dict)
+    )
 
+
+# Functions used to convert from dicts with Pymatgen objects to their dict equivalent (for aiida)
+
+def refactor_defects_dict(defect_entries_dict: dict) -> dict:
+    """Transform defects_dict so that
+    DefectEntry_as_dict -> DefectEntry object"""
+    for key, value_dict in defect_entries_dict.items():  # for defect type (e.g. vacancies)
+        defect_entries_aiida = {}
+        for defect_name, defect_entry_list in value_dict.items():
+            defect_entries_aiida[defect_name] = []
+            for defect_entry_as_dict in defect_entry_list:
+                defect_entries_aiida[defect_name].append(
+                    DefectEntry.from_dict(defect_entry_as_dict)
+            )
+        defect_entries_dict[key] = deepcopy(defect_entries_aiida)  # for each defect type, dict of DefectEntries
+    return defect_entries_dict
+
+
+def refactor_distortion_dict(
+    distorted_dict: dict,
+):
+    """Refactor distorted_dict to be compatible with aiida
+    (Structure -> Structure_as_dict, Site -> Site_as_dict)"""
+    distorted_dict_aiida = {}
+    for defect_name, dist_dict in distorted_dict.items():
+        distorted_dict_aiida[defect_name] = {}
+
+        # Add serilizable data
+        for key, value in dist_dict.items():
+            if "site" in key:
+                distorted_dict_aiida[defect_name][key] = value.as_dict()
+            if key not in ["charges"]:
+                distorted_dict_aiida[defect_name][key] = value
+
+        # Refactor Structure -> Structure_as_dict
+        distorted_dict_aiida[defect_name]["charges"] = {}
+        for charge, charge_dict in dist_dict["charges"].items():
+            distorted_dict_aiida[defect_name]["charges"][charge] = {
+                "structures": {
+                    "distortions": {},
+                    "Unperturbed": charge_dict["structures"]["Unperturbed"].as_dict(),
+                }
+            }
+            for dist_name, structure in (
+                charge_dict["structures"]["distortions"].items()
+            ):
+                distorted_dict_aiida[defect_name]["charges"][charge]["structures"]["distortions"][
+                    dist_name
+                ] = structure.as_dict()
+
+    return distorted_dict_aiida

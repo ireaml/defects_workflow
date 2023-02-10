@@ -250,7 +250,7 @@ def generate_defect_entries(
 
 
 @calcfunction
-def generate_supercell_n_defects(
+def generate_defects(
     bulk: StructureData,
     defect_types: List[str]=List(['vacancies', 'interstitials', 'antisites']),
     symprec: Float=Float(0.01),  # default in pmg.analysis.defects
@@ -336,7 +336,9 @@ def generate_supercell_n_defects(
 
 
 @calcfunction
-def sort_interstitials_for_screening(defects_dict: Dict):
+def sort_interstitials_for_screening(
+    defects_dict: Dict
+):
     """
     Loop over defects_dict to identify interstitials of the
     same element, and select them for screening.
@@ -345,14 +347,17 @@ def sort_interstitials_for_screening(defects_dict: Dict):
     avoid cases where different initial structures lead to the
     same final structure.)
     """
+    # Refactor Dict to dict: (Note that DefectEntrys are still in dict format)
+    defects_dict = defects_dict.get_dict()
+
     # Group interstitials by element:
     dict_interstitials = {}  # {Te_i: {Te_i_s32: DefectEntry, ...}, Cd_i: {...}}}
-    for defect_name, entry in defects_dict.value["interstitials"].items():
-        if entry.charge_state == 0: # only neutral for screening
-            if entry.defect.name in dict_interstitials:
-                dict_interstitials[entry.defect.name][defect_name] = entry
+    for defect_name, entry in defects_dict["interstitials"].items():
+        if entry["charge_state"] == 0: # only neutral for screening
+            if entry["defect"]["name"] in dict_interstitials:
+                dict_interstitials[entry["defect"]["name"]][defect_name] = entry
             else:
-                dict_interstitials[entry.defect.name] = {defect_name: entry}
+                dict_interstitials[entry["defect"]["name"]] = {defect_name: entry}
     # Select cases with more than one interstitial:
     dict_interstitials = {
         k: v for k, v in dict_interstitials.items() if len(v) > 1
