@@ -25,6 +25,8 @@ from shakenbreak.input import _get_defect_name_from_obj
 #from defects_workflow.charge_tools import get_charges, group_ions, extend_list_to_zero
 from defectivator.tools import get_charges, group_ions, extend_list_to_zero
 
+# TODO: Best to refactor to only do supercell computation for one defect, store matrix
+# And use that for other defects
 
 def _generate_defects(
     bulk: Structure | StructureData,

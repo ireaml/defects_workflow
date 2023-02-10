@@ -137,6 +137,11 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             valid_type=orm.Dict,
             required=False,
         )
+        spec.output(
+            "defect_entries_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
         # Exit codes:
         spec.exit_code(
             0,
@@ -280,7 +285,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         # Generate defects with pymatgen-analysis-defects
         relaxed_structure = self.inputs.structure
-        defects_dict = generate_supercell_n_defects(
+        defects_dict_aiida = generate_supercell_n_defects(
             bulk=relaxed_structure,
             defect_types=self.inputs.defect_types,
             min_length=self.inputs.supercell_min_length,
@@ -292,7 +297,12 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             dummy_species=orm.Str("X"),  # to keep track of frac coords in sc
             charge_tolerance=self.inputs.charge_tolerance,
         )  # type orm.Dict (not dict!)
-        self.ctx.defects_dict = defects_dict.get_dict()  # as python dict, easier for postprocessing
+        # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
+        # should refactor to DefectEntrys here
+
+        self.ctx.defects_dict_aiida = deepcopy(defects_dict_aiida)  # store for output
+        self.out("defect_entries_dict", defects_dict_aiida)
+        self.ctx.defects_dict = refactor_defects_dict(defects_dict_aiida).get_dict()  # as python dict, easier for postprocessing
 
 
     def screen_interstitials(self):
@@ -466,9 +476,26 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     ),
                 )
                 incar = defect_relax_set_dict["incar"]
+                # Submit unperturbed structure:
+
                 # Submit each distortion:
-                for dist_name, structure in (
-                    dist_dict["charges"][charge]["structures"]["distortions"].items()
+                for dist_name, structure in zip(
+                    # Names:
+                    [
+                        "Unperturbed",
+                    ]
+                    + list(
+                        dist_dict["charges"][charge]["structures"][
+                            "distortions"
+                        ].keys()
+                    ),
+                    # Structures:
+                    [dist_dict["charges"][charge]["structures"]["Unperturbed"]]
+                    + list(
+                        dist_dict["charges"][charge]["structures"][
+                            "distortions"
+                        ].values()
+                    ),
                 ):
                     # Submit relaxation (gamma point):
                     workchain, inputs = setup_relax_inputs(
@@ -498,23 +525,46 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     self.to_context(**{key: workchain})
 
     def parse_snb_relaxations(self):
-        """Validate & parse data from the relaxations."""
+        """
+        Validate & parse data from the relaxations.
+        The output dictionary is formatted like:
+        {
+            defect_name:
+                "charges": {
+                    charge_state: {
+                        Unperturbed: {},
+                        Bond_Distortion: {},
+                        ...
+                    }
+                },
+                "defect_entry_dict": {},
+        }
+        """
         self.report("parse_snb_relaxations")
         distorted_dict = self.ctx.distorted_dict
         out_dict = {}
         for defect_name, dist_dict in distorted_dict.items():
-            out_dict[defect_name] = {}
+            out_dict[defect_name] = {
+                "defect_entries": self.ctx.defects_dict_aiida[defect_name],  # list with DefectEntry for all charge states
+                "charges": {},
+            }
             for charge in dist_dict["charges"]:
-                out_dict[defect_name][charge] = {}
+                out_dict[defect_name]["charges"][charge] = {}
                 for dist_name in (
-                    dist_dict["charges"][charge]["structures"]["distortions"]
+                    [
+                        "Unperturbed",
+                    ]
+                    + list(
+                        dist_dict["charges"][charge]["structures"]["distortions"].keys()
+                    )
                 ):
                     # Validate and parse outputs (structure, energy, traj, forces, stress)
                     key = f"snb.{defect_name}.{charge}.{dist_name}"
                     self.validate_finished_workchain(workchain_name=key)
-                    out_dict[defect_name][charge][dist_name] = parse_snb_workchain(
+                    out_dict[defect_name]["charges"][charge][dist_name] = parse_snb_workchain(
                         workchain=self.ctx[key]
                     ).get_dict()
+
         self.ctx.out_dict = orm.Dict(out_dict)
 
     def results(self):
@@ -522,12 +572,26 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         The output dictionary has the following format:
         {defect_name: {charge: {dist_name: {"pk":, "structure": , etc}, }}}
         """
-        self.outmany(self.ctx.out_dict)
+        self.out("results", self.ctx.out_dict)
 
 
 # Below are the functions and calcfunctions used withing the above workchain
 # See https://aiida.readthedocs.io/projects/aiida-core/en/v2.2.1/topics/
 # workflows/concepts.html#topics-workflows-concepts-workchains
+
+def refactor_defects_dict(defect_entries_dict: dict) -> dict:
+    # Transform DefectEntry_as_dict -> DefectEntry object
+    for key, value_dict in defect_entries_dict.items():  # for defect type (e.g. vacancies)
+        defect_entries_aiida = {}
+        for defect_name, defect_entry_list in value_dict.items():
+            defect_entries_aiida[defect_name] = []
+            for defect_entry_as_dict in defect_entry_list:
+                defect_entries_aiida[defect_name].append(
+                    DefectEntry.from_dict(defect_entry_as_dict)
+            )
+        defect_entries_dict[key] = deepcopy(defect_entries_aiida)  # for each defect type, dict of DefectEntries
+    return defect_entries_dict
+
 
 @calcfunction
 def parse_snb_workchain(workchain) -> orm.Dict:
