@@ -39,7 +39,28 @@ path = GroupPath()
 
 class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     """Workflow to apply ShakeNBreak to all intrinsic defects
-    for a certain host."""
+    for a certain host.
+
+    Args:
+        structure: StructureData
+        defect_types: List
+        screen_intersitials: Bool
+        submit_relaxations: Bool
+        symmetry_tolerance: Float
+        supercell_min_length: Float
+        supercell_max_number_atoms: Int
+        supercell_min_number_atoms: Int
+        charge_tolerance: Float
+        code_string_vasp_gam: Str
+        num_nodes: Int
+
+    Returns:
+        results (Dict)
+        defect_entries_dict (Dict)
+        snb_output_dicts (Dict):
+            Dictionary with keys "distortions_dict" and "metadata_dict",
+            storing the dictionaries output by ShakeNBreak.
+    """
 
     @classmethod
     def define(cls, spec):
@@ -74,13 +95,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             help=("List of defect types to generate. "
                 "E.g: orm.List(['vacancies', 'interstitials', 'antisites'])"
             )
-        )
-        spec.input(
-            "screen_interstitials",
-            valid_type=orm.Bool,
-            required=False,
-            default=orm.Bool(True),
-            help="Whether to screen interstitials."
         )
         spec.input(
             "num_nodes",
@@ -142,6 +156,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             help='Code string for vasp_gam',
         )
         spec.input(
+            "screen_interstitials",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True),
+            help="Whether to screen interstitials."
+        )
+        spec.input(
             'submit_relaxations',
             valid_type=orm.Bool,
             required=False,
@@ -162,7 +183,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             required=False,
         )
         spec.output(
-            "snb_output_dict",
+            "snb_output_dicts",
             valid_type=orm.Dict,
             required=False,
         )
@@ -305,7 +326,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
         )
 
-
     def generate_defects(self):
         """Generate defects."""
 
@@ -336,7 +356,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         # self.ctx.defects_dict = refactor_defects_dict(
         #     deepcopy(defects_dict_aiida.get_dict())
         # )  # as python dict, easier for postprocessing
-
 
     def screen_interstitials(self):
         """
@@ -421,7 +440,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                 key = f"screen.{defect_name}"
                 self.to_context(**{key: workchain})
 
-
     def analyse_screening_results(self):
         """
         Analyse screening results.
@@ -466,7 +484,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
                     if compare_structures(structure_1, structure_2):
                         self.ctx.defects_dict_aiida["interstitials"].pop(defect_name, None)
 
-
     def apply_shakenbreak(self):
         """Apply ShakeNBreak."""
         self.report("Applying shakenbreak")
@@ -477,7 +494,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             ) # with all pmg objects as dicts
         )
         self.ctx.distorted_dict_aiida = output_Dict["distortions_dict"]  # this is a python dict
-        self.out("snb_output_dict", output_Dict)  # Both distortions & metadata dict
+        self.out("snb_output_dicts", output_Dict)  # Both distortions & metadata dict
         # Note that in distortions_dict, all pmg objects are dicts!
         # This distortions_dict is formatted like:
         # {defect_name: {
@@ -494,7 +511,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         #        }
         #    }
         # }
-
 
     def relax_defects(self):
         """Submit geometry optimisations for the defects."""
@@ -619,7 +635,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         else:
             self.out("results", self.ctx.out_dict)
             self.report("Completed collecting ShakeNBreak results, workchain finished.")
-
 
 
 # Below are the functions and calcfunctions used withing the above workchain:
