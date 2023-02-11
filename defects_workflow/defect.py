@@ -157,7 +157,7 @@ class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
         self.out("defect_entries_dict", defects_dict_aiida)
 
 
-class InterstitialScreening(WorkChain, metaclass=ABCMeta):
+class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
     @classmethod
     def define(cls, spec):
         """Define inputs, outputs, and outline."""
@@ -169,20 +169,74 @@ class InterstitialScreening(WorkChain, metaclass=ABCMeta):
         )
 
         spec.input(
-            'structure',
-            valid_type=orm.StructureData,
-            required=False,
-            help='The host structure (primitive or conventional).'
-        )
-        spec.input(
             'defects_dict_aiida',
             valid_type=orm.Dict,
             required=False,
             help=(
                 "Dictionary with generated defects (as DefectEntries objects), formatted as "
-                "the output of DefectGenerationWorkChain"
+                "the output of DefectGenerationWorkChain (e.g. "
+                " {'vacancies': {'v_Cd_s0': [DefectEntry_as_dict, ...]}}"
+                ")."
             )
         )
+        spec.output(
+            "defects_dict_aiida",
+            valid_type=orm.Dict,
+            required=False,
+            help=(
+                "Dictionary with screened defects (as DefectEntries objects), "
+                "formatted as the output of DefectGenerationWorkChain (e.g. "
+                " {'vacancies': {'v_Cd_s0': [DefectEntry_as_dict, ...]}}"
+                ")."
+            )
+        )
+        spec.exit_code(
+            0,
+            'NO_ERROR',
+            message='the sun is shining',
+        )
+        pec.exit_code(
+            1,
+            'ERROR_PARSING_INPUT_DICT',
+            message=("Problem parsing the input dictionary with the defect entries. "
+            "Verify it's of the correct format.")
+        )
+        spec.exit_code(
+            2,
+            'ERROR_PARSING_BULK_STRUCTURE',
+            message=("Problem parsing bulk pymatgen Structure.")
+        )
+        spec.exit_code(
+            400,
+            'ERROR_SUB_PROCESS_FAILED',
+            message="The `{cls}` workchain failed with exit status {exit_status}."
+        )
+        spec.exit_code(
+            500,
+            'ERROR_OUTPUT_STRUCTURE_NOT_FOUND',
+            message="Couldnt parse output structure from workchain {pk}."
+        )
+        spec.exit_code(
+            501,
+            'ERROR_PARSING_OUTPUT',
+            message="Couldnt parse output from workchain {pk}."
+        )
+
+    def setup(self):
+        """Setup primitive/conventional input structure"""
+        defects_dict = self.inputs.defects_dict_aiida.get_dict()
+        try:
+            # Grab a defect entry
+            defect_entry_as_dict = list(defects_dict["interstitials"].values())[0][0]
+        except:
+            return self.exit_codes.ERROR_PARSING_INPUT_DICT
+
+        try:
+            self.ctx.structure = orm.StructureData(
+                pymatgen_structure=Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
+            )
+        except:
+            return self.exit_codes.ERROR_PARSING_BULK_STRUCTURE
 
     def screen_interstitials(self):
         """
@@ -197,7 +251,7 @@ class InterstitialScreening(WorkChain, metaclass=ABCMeta):
         self.report("Screening interstitials")
 
         # Get composition string
-        self.ctx.composition = self.setup_composition(self.inputs.structure)
+        self.ctx.composition = self.setup_composition(self.ctx.structure)
 
         # Get interstitials with sym ineq configurations (@calcfunction):
         self.ctx.int_dict_aiida = sort_interstitials_for_screening(
@@ -315,6 +369,110 @@ class InterstitialScreening(WorkChain, metaclass=ABCMeta):
 
         self.out("defects_dict_aiida", self.inputs.defects_dict_aiida)
 
+    def setup_composition(self, structure_data: orm.StructureData):
+        """Setup composition."""
+        structure = structure_data.get_pymatgen_structure()
+        composition = structure.composition.to_pretty_string()
+        return composition
+
+    def _determine_hpc(self):
+        code = orm.load_code(self.inputs.code_string_vasp_gam.value)
+        return code.computer.label
+
+    def _setup_number_cores_per_machine(self, hpc_string: str):
+        """Determine number of cores based on HPC"""
+        if "archer" in hpc_string.lower():
+            return 128
+        elif "young" in hpc_string.lower():
+            return 40
+        else:
+            raise ValueError("HPC string not recognised.")
+
+    def _get_ncore(self, hpc_string: str):
+        """Determine NCORE based on HPC chosen"""
+        if "archer" in hpc_string.lower():
+            return 8  # or 16
+        elif "young" in hpc_string.lower():
+            return 10
+
+    def setup_options(
+        self,
+        hpc_string : str,
+        num_machines: int,
+        num_mpiprocs_per_machine: int=128,  # assume archer2
+        num_cores_per_machine: int=128,  # assume archer2
+        time_in_hours: int=12,
+    ):
+        """Setup options for HPC with aiida."""
+        return setup_options(
+            hpc_string=hpc_string,
+            num_machines=num_machines,
+            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
+            num_cores_per_machine=num_cores_per_machine,
+            time_in_hours=time_in_hours
+        )
+
+    def setup_settings(self, calc_type: str="screening"):
+        return setup_settings(calc_type)
+
+    def parse_relaxed_structure(self, workchain) -> orm.StructureData:
+        """Get output (relaxed) structure from workchain."""
+        try:
+            return workchain.outputs.relax.structure
+        except:
+            self.exit_codes.ERROR_OUTPUT_STRUCTURE_NOT_FOUND.format(
+                pk=workchain.pk
+            )
+
+    def parse_final_energy(self, workchain) -> float:
+        """Parse final energy from relaxation workchain."""
+        try:
+            return workchain.outputs.misc.get_dict()['total_energies']['energy_extrapolated']
+        except:
+            self.exit_codes.ERROR_PARSING_OUTPUT.format(
+                pk=workchain.pk
+            )
+
+    def add_workchain_to_group(self, workchain, group_label):
+        """Add workchain to group."""
+        group_path = GroupPath()
+        if group_label:
+            group = group_path[group_label].get_or_create_group()
+            group = group_path[group_label].get_group()
+            group.add_nodes(workchain)
+            # print(
+            #     f"Submitted relax workchain with pk: {workchain.pk}"
+            #     +f" and label {workchain.label}, "
+            #     +f"stored in group with label {group_label}"
+            # )
+        # else:
+        #     print(
+        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
+        #     )
+
+    def validate_finished_workchain(self, workchain_name: str):
+        """Validate that the workchain finished successfully."""
+        if workchain_name not in self.ctx:
+            raise RuntimeError(f"Workchain {workchain_name} not found in context.")
+
+        workchain = self.ctx[workchain_name]
+        cls = self._process_class.__name__
+        # Check if workchain finished successfully:
+        if not workchain.is_finished_ok:
+            exit_status = self.ctx.workchain.exit_status
+            self.report(
+                f"{cls}<{self.workchain.pk}> (label={workchain.label}) failed with exit status {exit_status}."
+            )
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=cls,
+                exit_status=exit_status
+            )
+        # All ok
+        self.report(
+            f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
+        )
+
+
 
 class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     """Workflow to apply ShakeNBreak to all intrinsic defects
@@ -350,7 +508,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             cls.generate_defects,
             if_(cls.should_run_screening)(
                 cls.screen_interstitials,
-                cls.analyse_screening_results
             ),
             cls.apply_shakenbreak,
             if_(cls.should_submit_relax)(
@@ -554,11 +711,12 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     def generate_defects(self):
         """Generate defects."""
 
-        defects_dict_aiida = self.submit(
+        defects_Dict_aiida = self.submit(
             DefectGenerationWorkChain,
             **self.exposed_inputs(DefectGenerationWorkChain, 'defect_generation')
         )
-        self.out("defect_entries_dict", defects_dict_aiida)
+        self.ctx.defects_Dict_aiida = defects_Dict_aiida  # orm.Dict
+        self.out("defect_entries_dict", defects_Dict_aiida)
 
         # self.ctx.defects_dict = refactor_defects_dict(
         #     deepcopy(defects_dict_aiida.get_dict())
@@ -574,131 +732,17 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         The screening is performed by performing Gamma point relaxations
         (for a given element, select interstitials lower in energy).
         """
-        self.report("screen_interstitials")
-
-        # Get composition string
-        self.ctx.composition = self.setup_composition(self.inputs.structure)
-
-        # Get interstitials with sym ineq configurations (@calcfunction):
-        self.ctx.int_dict_aiida = sort_interstitials_for_screening(
-            orm.Dict(self.ctx.defects_dict_aiida)
-        ).get_dict()  # as python dict, with DefectEntry_as_dicts!
-
-        # Get incar (same for all sym ineq interstitials)
-        structure = list(list(self.ctx.int_dict_aiida.values())[0].values())[0]["sc_entry"]["structure"]
-        # Update ncore based on hpc of code:
-        self.ctx.hpc_string = self._determine_hpc()
-        self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
-        # For screening, only relax neutral:
-        defect_relax_set_dict = setup_incar_snb(
-            supercell=orm.StructureData(pymatgen_structure=structure),
-            charge=orm.Int(0),
-            incar_settings=orm.Dict(
-                {"NCORE": self.ctx.ncore}
-            ),
+        self.ctx.defects_dict_aiida = self.submit(
+            InterstitialScreeningWorkChain,
+            defects_dict_aiida=self.ctx.defects_Dict_aiida,
         )
-        incar = defect_relax_set_dict["incar"]
-
-        # Setup KpointsData
-        self.ctx.gam_kpts = setup_gamma_kpoints()
-
-        # Setup HPC options:
-        self.ctx.number_cores_per_machine = self._setup_number_cores_per_machine(
-            hpc_string=self.ctx.hpc_string
-        )
-        self.ctx.num_nodes = self.inputs.num_nodes
-        self.ctx.options = self.setup_options(
-            hpc_string=self.ctx.hpc_string,
-            num_machines=self.ctx.num_nodes,
-            num_cores_per_machine=self.ctx.number_cores_per_machine,
-            num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
-        )
-        # Setup settings for screening
-        settings = self.setup_settings(calc_type="screening")
-
-        # Submit geometry optimisations for all interstitials at the same time:
-        for general_int_name, defect_entry_dict in self.ctx.int_dict_aiida.items():
-            for defect_name, defect_entry in defect_entry_dict.items():
-                structure = defect_entry["sc_entry"]["structure"]
-                # Submit relaxation (gamma point):
-                workchain, inputs = setup_relax_inputs(
-                    code_string=self.inputs.code_string_vasp_gam.value,
-                    # aiida config:
-                    options=self.ctx.options,
-                    settings=settings,
-                    # VASP inputs:
-                    structure_data=structure,
-                    kpoints_data=self.ctx.gam_kpts, # 1,1,1
-                    incar_dict=deepcopy(incar.as_dict()),
-                    use_default_incar_settings=False,
-                    shape=False,
-                    volume=False,
-                    ionic_steps=600,
-                    # Labels:
-                    workchain_label=f"screen_{defect_name}",  # eg Te_i_s32
-                )
-                workchain = self.submit(workchain, **inputs)
-                # Add to group
-                self.add_workchain_to_group(
-                    workchain=workchain,
-                    group_label=f"defects_db/{self.ctx.composition}/02_interstitials_screening"
-                )
-                # To context:
-                key = f"screen.{defect_name}"
-                self.to_context(**{key: workchain})
-
-    def analyse_screening_results(self):
-        """
-        Analyse screening results.
-        If any initial interstitial structures relaxed to the same final one, select only one.
-        If energy difference between two interstitials is > 1eV, select the one with the lowest energy.
-        """
-        self.report("analyse_interstitial_screening_results")
-
-        # Loop over element speific interstitials: (Te_i, Cd_i)
-        for defect_entry_dict in self.ctx.int_dict_aiida.values():
-            energies = {}  # defect_name: energy of interstitial
-            for defect_name in defect_entry_dict:
-                # Validate workchains
-                key = f"screen.{defect_name}"
-                self.validate_finished_workchain(workchain_name=key)
-                # Parse final energy
-                energies[defect_name] = self.parse_final_energy(workchain=self.ctx[key])
-            # Compare energies:
-            lowest_energy = min(energies.values())
-            for defect_name, energy in energies.items():
-                if abs(lowest_energy) - abs(energy) > 1:
-                    # too high in energy, remove from dict
-                    self.ctx.defects_dict_aiida["interstitials"].pop(defect_name, None)
-                elif [
-                    abs(energy - stored_energy) < 0.1 for stored_energy in energies.values()
-                ]:
-                    # energy differece with other structure is too small, likely same structure
-                    # Use StructureMatcher to check
-                    # Get defect_names of structures with same energy:
-                    other_defect_name = [
-                        k for k
-                        in energies
-                        if (abs(energies[defect_name] - energy) < 0.1 and k != defect_name)
-                    ]
-                    # Get structures:
-                    structure_1 = self.parse_relaxed_structure(
-                        workchain=self.ctx[f"screen.{defect_name}"]
-                    )
-                    structure_2 = self.parse_relaxed_structure(
-                        workchain=self.ctx[f"screen.{other_defect_name}"]
-                    )
-                    if compare_structures(structure_1, structure_2):
-                        self.ctx.defects_dict_aiida["interstitials"].pop(defect_name, None)
 
     def apply_shakenbreak(self):
         """Apply ShakeNBreak."""
         self.report("Applying shakenbreak")
 
         output_Dict = apply_shakenbreak(  # calcfunction
-            defects_Dict=orm.Dict(
-                self.ctx.defects_dict_aiida
-            ) # with all pmg objects as dicts
+            defects_Dict=self.ctx.defects_Dict_aiida  # dict with all pmg objects as dicts
         )
         self.ctx.distorted_dict_aiida = output_Dict["distortions_dict"]  # this is a python dict
         self.out("snb_output_dicts", output_Dict)  # Both distortions & metadata dict
@@ -810,7 +854,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         out_dict = {}
         for defect_name, dist_dict in distorted_dict.items():
             out_dict[defect_name] = {
-                "defect_entries": self.ctx.defects_dict_aiida[defect_name],  # list with DefectEntry_as_dict for all charge states
+                "defect_entries": self.ctx.defects_Dict_aiida[defect_name],  # list with DefectEntry_as_dict for all charge states
                 "charges": {},
             }
             for charge in dist_dict["charges"]:
@@ -843,8 +887,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             self.out("results", self.ctx.out_dict)
             self.report("Completed collecting ShakeNBreak results, workchain finished.")
 
-
-class BaseDefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
 
 # Below are the functions and calcfunctions used withing the above workchain:
