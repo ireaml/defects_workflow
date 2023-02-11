@@ -31,7 +31,6 @@ from defects_workflow.defect_generation import (
     generate_defects,
     sort_interstitials_for_screening
 )
-
 from defects_workflow.vasp_input import setup_incar_snb
 
 
@@ -164,6 +163,11 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         )
         spec.output(
             "distortions_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
+        spec.output(
+            "metadata_dict",
             valid_type=orm.Dict,
             required=False,
         )
@@ -325,7 +329,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             max_atoms=self.inputs.supercell_max_number_atoms,
             force_diagonal=orm.Bool(False),
             interstitial_min_dist=orm.Float(1.0),
-            dummy_species=orm.Str("X"),  # to keep track of frac coords in sc
+            dummy_species_str=orm.Str("X"),  # to keep track of frac coords in sc
             charge_tolerance=self.inputs.charge_tolerance,
         )  # type orm.Dict (not dict!)
         # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
@@ -472,16 +476,16 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         """Apply ShakeNBreak."""
         self.report("Applying shakenbreak")
 
-        distorted_dict_aiida, metadata_dict = apply_shakenbreak(  # calcfunction
+        output_dict = apply_shakenbreak(  # calcfunction
             defects_Dict=orm.Dict(
                 self.ctx.defects_dict_aiida
             ) # with all pmg objects as dicts
         )
-        self.ctx.distorted_dict_aiida = distorted_dict_aiida.get_dict()
-        self.out("distortions_dict", distorted_dict_aiida)
-         # as dict, but
-        # with all seriliazable objects as dicts
-        # This orm.Dict is formatted like:
+        self.ctx.distorted_dict_aiida = output_dict["distortions_dict"]  # this is a python dict
+        self.out("distortions_dict", output_dict["distortions_dict"])
+        self.out("metadata_dict", output_dict["metadata_dict"])
+        # Note that in distortions_dict, all pmg objects are dicts!
+        # This distortions_dict is formatted like:
         # {defect_name: {
         #    "defect_site": Site_as_dict,
         #    "defect_type": Site_as_dict,
@@ -624,9 +628,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
 
 
-# Below are the functions and calcfunctions used withing the above workchain
-# See https://aiida.readthedocs.io/projects/aiida-core/en/v2.2.1/topics/
-# workflows/concepts.html#topics-workflows-concepts-workchains
+# Below are the functions and calcfunctions used withing the above workchain:
 
 @calcfunction
 def parse_snb_workchain(workchain) -> orm.Dict:
@@ -647,36 +649,39 @@ def parse_snb_workchain(workchain) -> orm.Dict:
 @calcfunction
 def apply_shakenbreak(defects_Dict: orm.Dict) -> orm.Dict:
     """Apply ShakeNBreak to defects dictionary"""
-    # 1. Refactor from dict to DefectEntry
-    defects_dict = defects_Dict.get_dict() # DefectEntry's as dict
-    defects_dict = refactor_defects_dict(defects_dict)
+    # 1. Refactor from DefectEntry_as_dict -> DefectEntry
+    defects_dict = refactor_defects_dict(defects_Dict.get_dict())
     # 2. Refactor to remove defect_type classification
     snb_defects = {
         k: v for d in defects_dict.values() for k, v in d.items()
     }
     dist = Distortions(defects=snb_defects)
-    distorted_dict, metadata_dict = dist.apply_distortions()
-    # distorted_dict is formatted like:
-    # {defect_name: {
-    #    "defect_site":,
-    #    "defect_type":,
-    #    "defect_multiplicity: ,
-    #    "defect_supercell_site": ,
-    #    "charges": {
-    #        charge: {
-    #             "structures": {
-    #                "Unperturbed": Structure,
-    #                "distortions": {"Bond_Distortion_-60.0%": Structure,}
-    #             }
-    #        }
-    #    }
-    # }
-    # Refactor dict to be compatible with aiida
-    distorted_dict_aiida = refactor_distortion_dict(distorted_dict)
-    return (
-        orm.Dict(dict=distorted_dict_aiida),
-        orm.Dict(dict=metadata_dict)
-    )
+    try:
+        distorted_dict, metadata_dict = dist.apply_distortions()
+        # distorted_dict is formatted like:
+        # {defect_name: {
+        #    "defect_site":,
+        #    "defect_type":,
+        #    "defect_multiplicity: ,
+        #    "defect_supercell_site": ,
+        #    "charges": {
+        #        charge: {
+        #             "structures": {
+        #                "Unperturbed": Structure,
+        #                "distortions": {"Bond_Distortion_-60.0%": Structure,}
+        #             }
+        #        }
+        #    }
+        # }
+        # Refactor dict to be compatible with aiida:
+        # (e.g. Structure -> dict ; Site -> dict)
+        distorted_dict_aiida = refactor_distortion_dict(distorted_dict)
+        return orm.Dict(dict={
+            "distortions_dict": distorted_dict_aiida,
+            "metadata_dict": metadata_dict
+        })
+    except Exception as e:
+        raise RuntimeError(f"Exception {e} was raised while applying ShakeNBreak")
 
 
 # Functions used to convert from dicts with Pymatgen objects to their dict equivalent (for aiida)
@@ -709,7 +714,7 @@ def refactor_distortion_dict(
         for key, value in dist_dict.items():
             if "site" in key:
                 distorted_dict_aiida[defect_name][key] = value.as_dict()
-            if key not in ["charges"]:
+            elif key not in ["charges"]:
                 distorted_dict_aiida[defect_name][key] = value
 
         # Refactor Structure -> Structure_as_dict

@@ -6,6 +6,7 @@ import warnings
 from copy import deepcopy
 
 from pymatgen.core.structure import Structure
+from pymatgen.core.periodic_table import DummySpecies
 from pymatgen.io.vasp.inputs import BadIncarWarning, incar_params
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from pymatgen.analysis.defects.generators import (
@@ -170,11 +171,11 @@ def add_charge_states(
 def generate_defect_entries(
     defects_dict: dict,
     sc_mat: np.ndarray | None = None,
-    dummy_species: str | None = "X",
     min_atoms: int = 40,
     max_atoms: int = 140,
     min_length: float = 10,
     force_diagonal: bool = False,
+    dummy_species: DummySpecies=DummySpecies("X"),
 ):
     """
     Generate a DefectEntry for each charge state of the Defect.
@@ -203,11 +204,17 @@ def generate_defect_entries(
         defect: Defect,
         charge_state: int,
         supercell_struct: Structure,
+        dummy_species: DummySpecies=DummySpecies("X"),
     ):
         """Assuming defect supercell has been generated with dummy atom"""
         # Get defect frac coords in supercell
         supercell_struct = supercell_struct.copy() # Don't want to modify original!
-        sc_defect_frac_coords = supercell_struct.pop(-1).frac_coords  # Added at the end
+        # Find frac coord of dummy species & remove it from supercell
+        dummy_site = [
+            site for site in supercell_struct if site.species.elements[0].symbol == dummy_species.symbol
+        ][0]
+        sc_defect_frac_coords = dummy_site.frac_coords
+        supercell_struct.remove(dummy_site)
         sc_entry = ComputedStructureEntry(
             structure=supercell_struct,
             energy=0.0,  # Needs to be set, so just set to 0.0
@@ -243,6 +250,7 @@ def generate_defect_entries(
                         defect=defect,
                         charge_state=charge_state,
                         supercell_struct=supercell_struct,
+                        dummy_species=dummy_species,
                     )
                 )
         defects_dict[key] = deepcopy(defect_entries)  # for each defect type, dict of DefectEntries
@@ -257,7 +265,7 @@ def generate_defects(
     angle_tolerance: Int=Int(5),
     interstitial_min_dist: Float=Float(1.0),
     sc_mat: ArrayData | None = None,
-    dummy_species: Str | None = "V",
+    dummy_species_str: Str | None = "X",
     min_atoms: Int = Int(20),
     max_atoms: Int = Int(140),
     min_length: Float = Float(10),
@@ -278,8 +286,8 @@ def generate_defects(
             Minimum distance for interstitials. Defaults to Float(0.9).
         sc_mat (ArrayData, optional):
             Supercell matrix. Defaults to None.
-        dummy_species (Str, optional):
-            Dummy species. Defaults to None.
+        dummy_species_str (Str, optional):
+            Symbol of dummy species (as string). Defaults to None.
         min_atoms (Int, optional):
             Minimum number of atoms in supercell. Defaults to Int(80).
         max_atoms (Int, optional):
@@ -316,7 +324,7 @@ def generate_defects(
     defect_entries_dict = generate_defect_entries(
         defects_dict=defects_dict,
         sc_mat=sc_mat.get_array() if sc_mat else None,
-        dummy_species=dummy_species.value,
+        dummy_species=DummySpecies(symbol=dummy_species_str.value),
         min_atoms=min_atoms.value,
         max_atoms=max_atoms.value,
         min_length=min_length.value,
