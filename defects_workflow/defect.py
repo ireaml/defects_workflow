@@ -162,12 +162,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             required=False,
         )
         spec.output(
-            "distortions_dict",
-            valid_type=orm.Dict,
-            required=False,
-        )
-        spec.output(
-            "metadata_dict",
+            "snb_output_dict",
             valid_type=orm.Dict,
             required=False,
         )
@@ -476,14 +471,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         """Apply ShakeNBreak."""
         self.report("Applying shakenbreak")
 
-        output_dict = apply_shakenbreak(  # calcfunction
+        output_Dict = apply_shakenbreak(  # calcfunction
             defects_Dict=orm.Dict(
                 self.ctx.defects_dict_aiida
             ) # with all pmg objects as dicts
         )
-        self.ctx.distorted_dict_aiida = output_dict["distortions_dict"]  # this is a python dict
-        self.out("distortions_dict", output_dict["distortions_dict"])
-        self.out("metadata_dict", output_dict["metadata_dict"])
+        self.ctx.distorted_dict_aiida = output_Dict["distortions_dict"]  # this is a python dict
+        self.out("snb_output_dict", output_Dict)  # Both distortions & metadata dict
         # Note that in distortions_dict, all pmg objects are dicts!
         # This distortions_dict is formatted like:
         # {defect_name: {
