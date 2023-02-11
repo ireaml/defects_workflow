@@ -36,11 +36,11 @@ def setup_incar_snb(
     the charge state of the defect (charge) and specified
     user settings (incar_settins, potcar_settins).
     """
-    vasp_input_set = setup_incar_snb(
+    vasp_input_set = _setup_incar_snb(
         supercell=supercell.get_pymatgen_structure(),
         charge=charge.value,
         incar_settings=incar_settings.get_dict(),
-        potcar_settings=potcar_settings.get_dict(),
+        potcar_settings=potcar_settings.get_dict() if potcar_settings else None,
     )
     return Dict(dict=vasp_input_set.as_dict())
 

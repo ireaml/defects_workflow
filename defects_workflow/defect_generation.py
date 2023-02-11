@@ -4,6 +4,7 @@ from __future__ import annotations
 import numpy as np
 import warnings
 from copy import deepcopy
+import warnings
 
 from pymatgen.core.structure import Structure
 from pymatgen.core.periodic_table import DummySpecies
@@ -360,14 +361,17 @@ def sort_interstitials_for_screening(
 
     # Group interstitials by element:
     dict_interstitials = {}  # {Te_i: {Te_i_s32: DefectEntry, ...}, Cd_i: {...}}}
-    for defect_name, entry in defects_dict["interstitials"].items():
-        if entry["charge_state"] == 0: # only neutral for screening
-            if entry["defect"]["name"] in dict_interstitials:
-                dict_interstitials[entry["defect"]["name"]][defect_name] = entry
-            else:
-                dict_interstitials[entry["defect"]["name"]] = {defect_name: entry}
+    for defect_name, entry_list in defects_dict["interstitials"].items():
+        entry_as_dict = [entry for entry in entry_list if entry["charge_state"] == 0][0]  # only neutral for screening
+        entry = DefectEntry.from_dict(entry_as_dict)
+        if entry.defect.name in dict_interstitials:
+            dict_interstitials[entry.defect.name][defect_name] = entry_as_dict
+        else:
+            dict_interstitials[entry.defect.name] = {defect_name: entry_as_dict}
     # Select cases with more than one interstitial:
     dict_interstitials = {
         k: v for k, v in dict_interstitials.items() if len(v) > 1
     }
+    if not dict_interstitials:
+        warnings.warn("No interstitials found for screening.")
     return Dict(dict=dict_interstitials)

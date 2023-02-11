@@ -13,6 +13,7 @@ from aiida.engine import WorkChain, ToContext, calcfunction, if_
 from aiida import orm
 from aiida.tools.groups import GroupPath
 
+from pymatgen.core.structure import Structure
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 from pymatgen.io.vasp.sets import  VaspInputSet
 from pymatgen.analysis.defects.thermo import DefectEntry
@@ -166,10 +167,12 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
         super().define(spec)
 
         spec.outline(
+            cls.setup,
             cls.screen_interstitials,
             cls.analyse_screening_results
         )
 
+        # Inputs
         spec.input(
             'defects_dict_aiida',
             valid_type=orm.Dict,
@@ -181,6 +184,23 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
                 ")."
             )
         )
+        spec.input(
+            'code_string_vasp_gam',
+            valid_type=orm.Str,
+            required=False,
+            default=orm.Str("vasp_gam_6.3.0"), # default is archer2
+            help='Code string for vasp_gam',
+        )
+        spec.input(
+            "num_nodes",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(1),
+            help=("Number of nodes to use for relaxations. "
+            "Recommended values: 1 using archer2, 2 if using Young "
+            "(e.g. to get aorund 60-100 cores).")
+        )
+        # Outputs:
         spec.output(
             "defects_dict_aiida",
             valid_type=orm.Dict,
@@ -192,21 +212,27 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
                 ")."
             )
         )
+        # Exit codes:
         spec.exit_code(
             0,
             'NO_ERROR',
             message='the sun is shining',
         )
-        pec.exit_code(
-            1,
+        spec.exit_code(
+            501,
             'ERROR_PARSING_INPUT_DICT',
             message=("Problem parsing the input dictionary with the defect entries. "
             "Verify it's of the correct format.")
         )
         spec.exit_code(
-            2,
+            502,
             'ERROR_PARSING_BULK_STRUCTURE',
             message=("Problem parsing bulk pymatgen Structure.")
+        )
+        spec.exit_code(
+            503,
+            "ERROR_PARSING_INTERSTITIAL_STRUCTURE",
+            message="Problem parsing interstitial structure."
         )
         spec.exit_code(
             400,
@@ -214,7 +240,7 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             message="The `{cls}` workchain failed with exit status {exit_status}."
         )
         spec.exit_code(
-            500,
+            600,
             'ERROR_OUTPUT_STRUCTURE_NOT_FOUND',
             message="Couldnt parse output structure from workchain {pk}."
         )
@@ -234,8 +260,9 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             return self.exit_codes.ERROR_PARSING_INPUT_DICT
 
         try:
+            pmg_structure = Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
             self.ctx.structure = orm.StructureData(
-                pymatgen_structure=Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
+                pymatgen_structure=pmg_structure
             )
         except:
             return self.exit_codes.ERROR_PARSING_BULK_STRUCTURE
@@ -260,10 +287,25 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             self.inputs.defects_dict_aiida
         ).get_dict()  # as python dict, with DefectEntry_as_dicts!
 
+        # Check if there are actually more than 1 configuration
+        # for each type of interstitial:
+        if not self.ctx.int_dict_aiida:
+            self.report(
+                "No interstitials to screen! "
+                "There's only one configuration for each type of interstitial."
+            )
+            return self.exit_codes.NO_ERROR
+
         # Get incar (same for all sym ineq interstitials)
-        structure = list(
-            list(self.ctx.int_dict_aiida.values())[0].values()
-        )[0]["sc_entry"]["structure"]
+        try:
+            structure = Structure.from_dict(
+                list(
+                    list(self.ctx.int_dict_aiida.values())[0].values()
+                )[0]["sc_entry"]["structure"]
+            )
+        except:
+            self.out("defects_dict_aiida", self.inputs.defects_dict_aiida)
+            return self.exit_codes.ERROR_PARSING_INTERSTITIAL_STRUCTURE
         # Update ncore based on hpc of code:
         self.ctx.hpc_string = self._determine_hpc()
         self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
@@ -512,6 +554,14 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Bool(True), # default is archer2
             help='Whether to submit relaxations of defects.',
         )
+        # Code/HPC:
+        spec.input(
+            'code_string_vasp_gam',
+            valid_type=orm.Str,
+            required=False,
+            default=orm.Str("vasp_gam_6.3.0"), # default is archer2
+            help='Code string for vasp_gam',
+        )
         spec.input(
             "num_nodes",
             valid_type=orm.Int,
@@ -520,14 +570,6 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             help=("Number of nodes to use for relaxations. "
             "Recommended values: 1 using archer2, 2 if using Young "
             "(e.g. to get aorund 60-100 cores).")
-        )
-        # Code/HPC:
-        spec.input(
-            'code_string_vasp_gam',
-            valid_type=orm.Str,
-            required=False,
-            default=orm.Str("vasp_gam_6.3.0"), # default is archer2
-            help='Code string for vasp_gam',
         )
         # Outputs:
         spec.output(
@@ -547,13 +589,13 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             message='the sun is shining',
         )
         spec.exit_code(
-            1,
+            501,
             'ERROR_PARSING_INPUT_DICT',
             message=("Problem parsing the input dictionary with the defect entries. "
             "Verify it's of the correct format.")
         )
         spec.exit_code(
-            2,
+            502,
             'ERROR_PARSING_BULK_STRUCTURE',
             message=("Problem parsing bulk pymatgen Structure.")
         )
@@ -563,7 +605,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             message="The `{cls}` workchain failed with exit status {exit_status}."
         )
         spec.exit_code(
-            500,
+            600,
             'ERROR_OUTPUT_STRUCTURE_NOT_FOUND',
             message="Couldnt parse output structure from workchain {pk}."
         )
@@ -583,8 +625,9 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             return self.exit_codes.ERROR_PARSING_INPUT_DICT
 
         try:
+            pmg_structure = Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
             self.ctx.structure = orm.StructureData(
-                pymatgen_structure=Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
+                pymatgen_structure=pmg_structure
             )
         except:
             return self.exit_codes.ERROR_PARSING_BULK_STRUCTURE
@@ -633,7 +676,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
                     dist_dict["charges"][charge]["structures"]["Unperturbed"]
                 )  # dict -> Structure
                 defect_relax_set_dict = setup_incar_snb(  # calcfunction
-                    supercell=orm.StructureData(pymatgen=structure),
+                    supercell=orm.StructureData(pymatgen_structure=structure),
                     charge=orm.Int(charge),
                     incar_settings=orm.Dict(
                         {"NCORE": self.ctx.ncore}  # update ncore based on hpc of code
@@ -891,6 +934,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             ),
         )
 
+        # Inputs:
         spec.expose_inputs(
             DefectGenerationWorkChain, namespace='defect_generation'
         )
@@ -910,6 +954,15 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             required=False,
             default=orm.Str("vasp_gam_6.3.0"), # default is archer2
             help='Code string for vasp_gam',
+        )
+        spec.input(
+            "num_nodes",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(1),
+            help=("Number of nodes to use for relaxations. "
+            "Recommended values: 1 using archer2, 2 if using Young "
+            "(e.g. to get aorund 60-100 cores).")
         )
         spec.input(
             "screen_interstitials",
@@ -951,7 +1004,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             message="The `{cls}` workchain failed with exit status {exit_status}."
         )
         spec.exit_code(
-            500,
+            600,
             'ERROR_OUTPUT_STRUCTURE_NOT_FOUND',
             message="Couldnt parse output structure from workchain {pk}."
         )
@@ -963,8 +1016,9 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
     def should_run_screening(self):
         """Whether to screen interstitials"""
+        defect_types = self.inputs.defect_generation.defect_types.get_list()
         if (
-            "interstitials" in self.inputs.defect_types
+            "interstitials" in defect_types
             and self.inputs.screen_interstitials
         ):
             return True
@@ -976,7 +1030,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         defects_Dict_aiida = self.submit(
             DefectGenerationWorkChain,
-            **self.exposed_inputs(DefectGenerationWorkChain, 'defect_generation')
+            **self.exposed_inputs(DefectGenerationWorkChain, "defect_generation")
         )
         self.ctx.defects_Dict_aiida = defects_Dict_aiida  # orm.Dict
         self.out("defect_entries_dict", defects_Dict_aiida)
@@ -998,6 +1052,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         self.ctx.defects_Dict_aiida = self.submit(
             InterstitialScreeningWorkChain,
             defects_dict_aiida=self.ctx.defects_Dict_aiida,
+            screen_intersitials=self.inputs.screen_interstitials,
         )
         self.out("screened_defect_entries_dict", self.ctx.defects_Dict_aiida)
 
