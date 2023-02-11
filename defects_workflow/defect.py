@@ -158,6 +158,8 @@ class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
 
 
 class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
+    """Workchain to screen interstitials"""
+
     @classmethod
     def define(cls, spec):
         """Define inputs, outputs, and outline."""
@@ -473,31 +475,9 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
         )
 
 
-
-class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
-    """Workflow to apply ShakeNBreak to all intrinsic defects
-    for a certain host.
-
-    Args:
-        structure: StructureData
-        defect_types: List
-        screen_intersitials: Bool
-        submit_relaxations: Bool
-        symmetry_tolerance: Float
-        supercell_min_length: Float
-        supercell_max_number_atoms: Int
-        supercell_min_number_atoms: Int
-        charge_tolerance: Float
-        code_string_vasp_gam: Str
-        num_nodes: Int
-
-    Returns:
-        results (Dict)
-        defect_entries_dict (Dict)
-        snb_output_dicts (Dict):
-            Dictionary with keys "distortions_dict" and "metadata_dict",
-            storing the dictionaries output by ShakeNBreak.
-    """
+class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
+    """WorkChain to apply ShakeNBreak, submit relaxations and
+    analyse results"""
 
     @classmethod
     def define(cls, spec):
@@ -505,10 +485,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         super().define(spec)
 
         spec.outline(
-            cls.generate_defects,
-            if_(cls.should_run_screening)(
-                cls.screen_interstitials,
-            ),
+            cls.setup,
             cls.apply_shakenbreak,
             if_(cls.should_submit_relax)(
                 cls.relax_defects,
@@ -517,8 +494,23 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             ),
         )
 
-        spec.expose_inputs(
-            DefectGenerationWorkChain, namespace='defect_generation'
+        spec.input(
+            'defects_dict_aiida',
+            valid_type=orm.Dict,
+            required=False,
+            help=(
+                "Dictionary with generated defects (as DefectEntries objects), formatted as "
+                "the output of DefectGenerationWorkChain (e.g. "
+                " {'vacancies': {'v_Cd_s0': [DefectEntry_as_dict, ...]}}"
+                ")."
+            )
+        )
+        spec.input(
+            'submit_relaxations',
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True), # default is archer2
+            help='Whether to submit relaxations of defects.',
         )
         spec.input(
             "num_nodes",
@@ -537,30 +529,9 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Str("vasp_gam_6.3.0"), # default is archer2
             help='Code string for vasp_gam',
         )
-        spec.input(
-            "screen_interstitials",
-            valid_type=orm.Bool,
-            required=False,
-            default=orm.Bool(True),
-            help="Whether to screen interstitials."
-        )
-        spec.input(
-            'submit_relaxations',
-            valid_type=orm.Bool,
-            required=False,
-            default=orm.Bool(True), # default is archer2
-            help='Whether to submit relaxations of defects.',
-        )
-        # Specify outputs:
-        # Structures, Trajectories and forces for
-        # all snb relaxations
+        # Outputs:
         spec.output(
             'results',
-            valid_type=orm.Dict,
-            required=False,
-        )
-        spec.output(
-            "defect_entries_dict",
             valid_type=orm.Dict,
             required=False,
         )
@@ -574,6 +545,17 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             0,
             'NO_ERROR',
             message='the sun is shining',
+        )
+        spec.exit_code(
+            1,
+            'ERROR_PARSING_INPUT_DICT',
+            message=("Problem parsing the input dictionary with the defect entries. "
+            "Verify it's of the correct format.")
+        )
+        spec.exit_code(
+            2,
+            'ERROR_PARSING_BULK_STRUCTURE',
+            message=("Problem parsing bulk pymatgen Structure.")
         )
         spec.exit_code(
             400,
@@ -591,158 +573,32 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             message="Couldnt parse output from workchain {pk}."
         )
 
-    def should_run_screening(self):
-        """Whether to screen interstitials"""
-        if (
-            "interstitials" in self.inputs.defect_types
-            and self.inputs.screen_interstitials
-        ):
-            return True
-        else:
-            return False
+    def setup(self):
+        """Setup primitive/conventional input structure"""
+        defects_dict = self.inputs.defects_dict_aiida.get_dict()
+        try:
+            # Grab a defect entry
+            defect_entry_as_dict = list(list(defects_dict.values())[0].values())[0][0]
+        except:
+            return self.exit_codes.ERROR_PARSING_INPUT_DICT
+
+        try:
+            self.ctx.structure = orm.StructureData(
+                pymatgen_structure=Structure.from_dict(defect_entry_as_dict["defect"]["structure"])
+            )
+        except:
+            return self.exit_codes.ERROR_PARSING_BULK_STRUCTURE
 
     def should_submit_relax(self):
         """Whether to submit relaxations"""
         return self.inputs.submit_relaxations
-
-    def setup_composition(self, structure_data: orm.StructureData):
-        """Setup composition."""
-        structure = structure_data.get_pymatgen_structure()
-        composition = structure.composition.to_pretty_string()
-        return composition
-
-    def _determine_hpc(self):
-        code = orm.load_code(self.inputs.code_string_vasp_gam.value)
-        return code.computer.label
-
-    def _setup_number_cores_per_machine(self, hpc_string: str):
-        """Determine number of cores based on HPC"""
-        if "archer" in hpc_string.lower():
-            return 128
-        elif "young" in hpc_string.lower():
-            return 40
-        else:
-            raise ValueError("HPC string not recognised.")
-
-    def _get_ncore(self, hpc_string: str):
-        """Determine NCORE based on HPC chosen"""
-        if "archer" in hpc_string.lower():
-            return 8  # or 16
-        elif "young" in hpc_string.lower():
-            return 10
-
-    def setup_options(
-        self,
-        hpc_string : str,
-        num_machines: int,
-        num_mpiprocs_per_machine: int=128,  # assume archer2
-        num_cores_per_machine: int=128,  # assume archer2
-        time_in_hours: int=12,
-    ):
-        """Setup options for HPC with aiida."""
-        return setup_options(
-            hpc_string=hpc_string,
-            num_machines=num_machines,
-            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
-            num_cores_per_machine=num_cores_per_machine,
-            time_in_hours=time_in_hours
-        )
-
-    def setup_settings(self, calc_type: str="snb"):
-        return setup_settings(calc_type)
-
-    def parse_relaxed_structure(self, workchain) -> orm.StructureData:
-        """Get output (relaxed) structure from workchain."""
-        try:
-            return workchain.outputs.relax.structure
-        except:
-            self.exit_codes.ERROR_OUTPUT_STRUCTURE_NOT_FOUND.format(
-                pk=workchain.pk
-            )
-
-    def parse_final_energy(self, workchain) -> float:
-        """Parse final energy from relaxation workchain."""
-        try:
-            return workchain.outputs.misc.get_dict()['total_energies']['energy_extrapolated']
-        except:
-            self.exit_codes.ERROR_PARSING_OUTPUT.format(
-                pk=workchain.pk
-            )
-
-    def add_workchain_to_group(self, workchain, group_label):
-        """Add workchain to group."""
-        group_path = GroupPath()
-        if group_label:
-            group = group_path[group_label].get_or_create_group()
-            group = group_path[group_label].get_group()
-            group.add_nodes(workchain)
-            # print(
-            #     f"Submitted relax workchain with pk: {workchain.pk}"
-            #     +f" and label {workchain.label}, "
-            #     +f"stored in group with label {group_label}"
-            # )
-        # else:
-        #     print(
-        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
-        #     )
-
-    def validate_finished_workchain(self, workchain_name: str):
-        """Validate that the workchain finished successfully."""
-        if workchain_name not in self.ctx:
-            raise RuntimeError(f"Workchain {workchain_name} not found in context.")
-
-        workchain = self.ctx[workchain_name]
-        cls = self._process_class.__name__
-        # Check if workchain finished successfully:
-        if not workchain.is_finished_ok:
-            exit_status = self.ctx.workchain.exit_status
-            self.report(
-                f"{cls}<{self.workchain.pk}> (label={workchain.label}) failed with exit status {exit_status}."
-            )
-            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
-                cls=cls,
-                exit_status=exit_status
-            )
-        # All ok
-        self.report(
-            f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
-        )
-
-    def generate_defects(self):
-        """Generate defects."""
-
-        defects_Dict_aiida = self.submit(
-            DefectGenerationWorkChain,
-            **self.exposed_inputs(DefectGenerationWorkChain, 'defect_generation')
-        )
-        self.ctx.defects_Dict_aiida = defects_Dict_aiida  # orm.Dict
-        self.out("defect_entries_dict", defects_Dict_aiida)
-
-        # self.ctx.defects_dict = refactor_defects_dict(
-        #     deepcopy(defects_dict_aiida.get_dict())
-        # )  # as python dict, easier for postprocessing
-
-    def screen_interstitials(self):
-        """
-        Screen interstitials. For each element, select the interstitials lower
-        in energy (if difference > 1eV).
-        Also used to identify if any initial interstitial structures
-        relaxed to the same final one (in this case, only one is selected).
-
-        The screening is performed by performing Gamma point relaxations
-        (for a given element, select interstitials lower in energy).
-        """
-        self.ctx.defects_dict_aiida = self.submit(
-            InterstitialScreeningWorkChain,
-            defects_dict_aiida=self.ctx.defects_Dict_aiida,
-        )
 
     def apply_shakenbreak(self):
         """Apply ShakeNBreak."""
         self.report("Applying shakenbreak")
 
         output_Dict = apply_shakenbreak(  # calcfunction
-            defects_Dict=self.ctx.defects_Dict_aiida  # dict with all pmg objects as dicts
+            defects_Dict=self.inputs.defects_dict_aiida  # dict with all pmg objects as dicts
         )
         self.ctx.distorted_dict_aiida = output_Dict["distortions_dict"]  # this is a python dict
         self.out("snb_output_dicts", output_Dict)  # Both distortions & metadata dict
@@ -854,7 +710,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         out_dict = {}
         for defect_name, dist_dict in distorted_dict.items():
             out_dict[defect_name] = {
-                "defect_entries": self.ctx.defects_Dict_aiida[defect_name],  # list with DefectEntry_as_dict for all charge states
+                "defect_entries": self.inputs.defects_dict_aiida[defect_name],  # list with DefectEntry_as_dict for all charge states
                 "charges": {},
             }
             for charge in dist_dict["charges"]:
@@ -886,6 +742,403 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         else:
             self.out("results", self.ctx.out_dict)
             self.report("Completed collecting ShakeNBreak results, workchain finished.")
+
+    # Common methods:
+    def setup_composition(self, structure_data: orm.StructureData):
+        """Setup composition."""
+        structure = structure_data.get_pymatgen_structure()
+        composition = structure.composition.to_pretty_string()
+        return composition
+
+    def _determine_hpc(self):
+        code = orm.load_code(self.inputs.code_string_vasp_gam.value)
+        return code.computer.label
+
+    def _setup_number_cores_per_machine(self, hpc_string: str):
+        """Determine number of cores based on HPC"""
+        if "archer" in hpc_string.lower():
+            return 128
+        elif "young" in hpc_string.lower():
+            return 40
+        else:
+            raise ValueError("HPC string not recognised.")
+
+    def _get_ncore(self, hpc_string: str):
+        """Determine NCORE based on HPC chosen"""
+        if "archer" in hpc_string.lower():
+            return 8  # or 16
+        elif "young" in hpc_string.lower():
+            return 10
+
+    def setup_options(
+        self,
+        hpc_string : str,
+        num_machines: int,
+        num_mpiprocs_per_machine: int=128,  # assume archer2
+        num_cores_per_machine: int=128,  # assume archer2
+        time_in_hours: int=12,
+    ):
+        """Setup options for HPC with aiida."""
+        return setup_options(
+            hpc_string=hpc_string,
+            num_machines=num_machines,
+            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
+            num_cores_per_machine=num_cores_per_machine,
+            time_in_hours=time_in_hours
+        )
+
+    def setup_settings(self, calc_type: str="screening"):
+        return setup_settings(calc_type)
+
+    def parse_relaxed_structure(self, workchain) -> orm.StructureData:
+        """Get output (relaxed) structure from workchain."""
+        try:
+            return workchain.outputs.relax.structure
+        except:
+            self.exit_codes.ERROR_OUTPUT_STRUCTURE_NOT_FOUND.format(
+                pk=workchain.pk
+            )
+
+    def parse_final_energy(self, workchain) -> float:
+        """Parse final energy from relaxation workchain."""
+        try:
+            return workchain.outputs.misc.get_dict()['total_energies']['energy_extrapolated']
+        except:
+            self.exit_codes.ERROR_PARSING_OUTPUT.format(
+                pk=workchain.pk
+            )
+
+    def add_workchain_to_group(self, workchain, group_label):
+        """Add workchain to group."""
+        group_path = GroupPath()
+        if group_label:
+            group = group_path[group_label].get_or_create_group()
+            group = group_path[group_label].get_group()
+            group.add_nodes(workchain)
+            # print(
+            #     f"Submitted relax workchain with pk: {workchain.pk}"
+            #     +f" and label {workchain.label}, "
+            #     +f"stored in group with label {group_label}"
+            # )
+        # else:
+        #     print(
+        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
+        #     )
+
+    def validate_finished_workchain(self, workchain_name: str):
+        """Validate that the workchain finished successfully."""
+        if workchain_name not in self.ctx:
+            raise RuntimeError(f"Workchain {workchain_name} not found in context.")
+
+        workchain = self.ctx[workchain_name]
+        cls = self._process_class.__name__
+        # Check if workchain finished successfully:
+        if not workchain.is_finished_ok:
+            exit_status = self.ctx.workchain.exit_status
+            self.report(
+                f"{cls}<{self.workchain.pk}> (label={workchain.label}) failed with exit status {exit_status}."
+            )
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=cls,
+                exit_status=exit_status
+            )
+        # All ok
+        self.report(
+            f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
+        )
+
+
+class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
+    """Workflow to apply ShakeNBreak to all intrinsic defects
+    for a certain host.
+
+    Args:
+        structure: StructureData
+        defect_types: List
+        screen_intersitials: Bool
+        submit_relaxations: Bool
+        symmetry_tolerance: Float
+        supercell_min_length: Float
+        supercell_max_number_atoms: Int
+        supercell_min_number_atoms: Int
+        charge_tolerance: Float
+        code_string_vasp_gam: Str
+        num_nodes: Int
+
+    Returns:
+        results (Dict)
+        defect_entries_dict (Dict)
+        snb_output_dicts (Dict):
+            Dictionary with keys "distortions_dict" and "metadata_dict",
+            storing the dictionaries output by ShakeNBreak.
+    """
+
+    @classmethod
+    def define(cls, spec):
+        """Define inputs, outputs, and outline."""
+        super().define(spec)
+
+        spec.outline(
+            cls.generate_defects,
+            if_(cls.should_run_screening)(
+                cls.screen_interstitials,
+            ),
+            cls.apply_shakenbreak,
+            if_(cls.should_submit_relax)(
+                cls.relax_defects,
+                cls.parse_snb_relaxations,
+                cls.results,
+            ),
+        )
+
+        spec.expose_inputs(
+            DefectGenerationWorkChain, namespace='defect_generation'
+        )
+        spec.input(
+            "num_nodes",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(1),
+            help=("Number of nodes to use for relaxations. "
+            "Recommended values: 1 using archer2, 2 if using Young "
+            "(e.g. to get aorund 60-100 cores).")
+        )
+        # Code/HPC:
+        spec.input(
+            'code_string_vasp_gam',
+            valid_type=orm.Str,
+            required=False,
+            default=orm.Str("vasp_gam_6.3.0"), # default is archer2
+            help='Code string for vasp_gam',
+        )
+        spec.input(
+            "screen_interstitials",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True),
+            help="Whether to screen interstitials."
+        )
+        spec.input(
+            'submit_relaxations',
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True), # default is archer2
+            help='Whether to submit relaxations of defects.',
+        )
+        # Specify outputs:
+        # Structures, Trajectories and forces for
+        # all snb relaxations
+        spec.expose_outputs(ShakeNBreakWorkChain)
+        spec.output(
+            "defect_entries_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
+        spec.output(
+            "screened_defect_entries_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
+        # Exit codes:
+        spec.exit_code(
+            0,
+            'NO_ERROR',
+            message='the sun is shining',
+        )
+        spec.exit_code(
+            400,
+            'ERROR_SUB_PROCESS_FAILED',
+            message="The `{cls}` workchain failed with exit status {exit_status}."
+        )
+        spec.exit_code(
+            500,
+            'ERROR_OUTPUT_STRUCTURE_NOT_FOUND',
+            message="Couldnt parse output structure from workchain {pk}."
+        )
+        spec.exit_code(
+            501,
+            'ERROR_PARSING_OUTPUT',
+            message="Couldnt parse output from workchain {pk}."
+        )
+
+    def should_run_screening(self):
+        """Whether to screen interstitials"""
+        if (
+            "interstitials" in self.inputs.defect_types
+            and self.inputs.screen_interstitials
+        ):
+            return True
+        else:
+            return False
+
+    def generate_defects(self):
+        """Generate defects."""
+
+        defects_Dict_aiida = self.submit(
+            DefectGenerationWorkChain,
+            **self.exposed_inputs(DefectGenerationWorkChain, 'defect_generation')
+        )
+        self.ctx.defects_Dict_aiida = defects_Dict_aiida  # orm.Dict
+        self.out("defect_entries_dict", defects_Dict_aiida)
+
+        # self.ctx.defects_dict = refactor_defects_dict(
+        #     deepcopy(defects_dict_aiida.get_dict())
+        # )  # as python dict, easier for postprocessing
+
+    def screen_interstitials(self):
+        """
+        Screen interstitials. For each element, select the interstitials lower
+        in energy (if difference > 1eV).
+        Also used to identify if any initial interstitial structures
+        relaxed to the same final one (in this case, only one is selected).
+
+        The screening is performed by performing Gamma point relaxations
+        (for a given element, select interstitials lower in energy).
+        """
+        self.ctx.defects_Dict_aiida = self.submit(
+            InterstitialScreeningWorkChain,
+            defects_dict_aiida=self.ctx.defects_Dict_aiida,
+        )
+        self.out("screened_defect_entries_dict", self.ctx.defects_Dict_aiida)
+
+    def apply_shakenbreak(self):
+        """Apply ShakeNBreak."""
+        inputs = {
+            "code_string_vasp_gam": self.inputs.code_string_vasp_gam,
+            "num_nodes": self.inputs.code_string_vasp_gam,
+            "defects_dict_aiida": self.ctx.defects_Dict_aiida,
+            "submit_relaxations": self.inputs.submit_relaxations,
+        }
+        self.submit(
+            ShakeNBreakWorkChain,
+            **inputs,
+        )
+
+        # output_Dict = apply_shakenbreak(  # calcfunction
+        #     defects_Dict=self.ctx.defects_Dict_aiida  # dict with all pmg objects as dicts
+        # )
+        # self.ctx.distorted_dict_aiida = output_Dict["distortions_dict"]  # this is a python dict
+        # self.out("snb_output_dicts", output_Dict)  # Both distortions & metadata dict
+        # Note that in distortions_dict, all pmg objects are dicts!
+        # This distortions_dict is formatted like:
+        # {defect_name: {
+        #    "defect_site": Site_as_dict,
+        #    "defect_type": Site_as_dict,
+        #    "defect_multiplicity: ,
+        #    "defect_supercell_site": ,
+        #    "charges": {
+        #        charge: {
+        #             "structures": {
+        #                "Unperturbed": Structure_as_dict,
+        #                "distortions": {"Bond_Distortion_-60.0%": Structure,}
+        #             }
+        #        }
+        #    }
+        # }
+
+    # General methods:
+    def setup_composition(self, structure_data: orm.StructureData):
+        """Setup composition."""
+        structure = structure_data.get_pymatgen_structure()
+        composition = structure.composition.to_pretty_string()
+        return composition
+
+    def _determine_hpc(self):
+        code = orm.load_code(self.inputs.code_string_vasp_gam.value)
+        return code.computer.label
+
+    def _setup_number_cores_per_machine(self, hpc_string: str):
+        """Determine number of cores based on HPC"""
+        if "archer" in hpc_string.lower():
+            return 128
+        elif "young" in hpc_string.lower():
+            return 40
+        else:
+            raise ValueError("HPC string not recognised.")
+
+    def _get_ncore(self, hpc_string: str):
+        """Determine NCORE based on HPC chosen"""
+        if "archer" in hpc_string.lower():
+            return 8  # or 16
+        elif "young" in hpc_string.lower():
+            return 10
+
+    def setup_options(
+        self,
+        hpc_string : str,
+        num_machines: int,
+        num_mpiprocs_per_machine: int=128,  # assume archer2
+        num_cores_per_machine: int=128,  # assume archer2
+        time_in_hours: int=12,
+    ):
+        """Setup options for HPC with aiida."""
+        return setup_options(
+            hpc_string=hpc_string,
+            num_machines=num_machines,
+            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
+            num_cores_per_machine=num_cores_per_machine,
+            time_in_hours=time_in_hours
+        )
+
+    def setup_settings(self, calc_type: str="snb"):
+        return setup_settings(calc_type)
+
+    def parse_relaxed_structure(self, workchain) -> orm.StructureData:
+        """Get output (relaxed) structure from workchain."""
+        try:
+            return workchain.outputs.relax.structure
+        except:
+            self.exit_codes.ERROR_OUTPUT_STRUCTURE_NOT_FOUND.format(
+                pk=workchain.pk
+            )
+
+    def parse_final_energy(self, workchain) -> float:
+        """Parse final energy from relaxation workchain."""
+        try:
+            return workchain.outputs.misc.get_dict()['total_energies']['energy_extrapolated']
+        except:
+            self.exit_codes.ERROR_PARSING_OUTPUT.format(
+                pk=workchain.pk
+            )
+
+    def add_workchain_to_group(self, workchain, group_label):
+        """Add workchain to group."""
+        group_path = GroupPath()
+        if group_label:
+            group = group_path[group_label].get_or_create_group()
+            group = group_path[group_label].get_group()
+            group.add_nodes(workchain)
+            # print(
+            #     f"Submitted relax workchain with pk: {workchain.pk}"
+            #     +f" and label {workchain.label}, "
+            #     +f"stored in group with label {group_label}"
+            # )
+        # else:
+        #     print(
+        #         f"Submitted relax workchain with pk: {workchain.pk} and label {workchain.label}"
+        #     )
+
+    def validate_finished_workchain(self, workchain_name: str):
+        """Validate that the workchain finished successfully."""
+        if workchain_name not in self.ctx:
+            raise RuntimeError(f"Workchain {workchain_name} not found in context.")
+
+        workchain = self.ctx[workchain_name]
+        cls = self._process_class.__name__
+        # Check if workchain finished successfully:
+        if not workchain.is_finished_ok:
+            exit_status = self.ctx.workchain.exit_status
+            self.report(
+                f"{cls}<{self.workchain.pk}> (label={workchain.label}) failed with exit status {exit_status}."
+            )
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=cls,
+                exit_status=exit_status
+            )
+        # All ok
+        self.report(
+            f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
+        )
 
 
 
