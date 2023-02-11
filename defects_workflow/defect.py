@@ -37,6 +37,285 @@ from defects_workflow.vasp_input import setup_incar_snb
 MODULE_DIR = os.path.dirname(os.path.abspath(__file__))
 path = GroupPath()
 
+
+class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
+    """
+    WorkChain to setup supercell and generate point defects
+    for the primitive/conventional input structure.
+
+    Defect charge states are determined based on common oxidation
+    states for the element (controlled with the input parameter
+    `charge_tolerance`, that works as a threshold).
+
+    Args:
+        structure: StructureData
+        defect_types: List
+        symmetry_tolerance: Float
+        supercell_min_length: Float
+        supercell_max_number_atoms: Int
+        supercell_min_number_atoms: Int
+        charge_tolerance: Float
+
+    Returns:
+        defect_entries_dict (Dict)
+    """
+    @classmethod
+    def define(cls, spec):
+        """Define inputs, outputs, and outline."""
+        super().define(spec)
+
+        spec.outline(
+            cls.generate_defects,
+        )
+
+        spec.input(
+            'structure',
+            valid_type=orm.StructureData,
+            required=False,
+            help='The host structure (primitive or conventional).'
+        )
+        spec.input(
+            "defect_types",
+            valid_type=orm.List,
+            required=False,
+            default=orm.List(['vacancies', 'interstitials', 'antisites']),
+            help=("List of defect types to generate. "
+                "E.g: orm.List(['vacancies', 'interstitials', 'antisites'])"
+            )
+        )
+        spec.input(
+            'symmetry_tolerance',
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(0.01),
+            help='Symmetry tolerance for space group analysis on the input structure.',
+        )
+        spec.input(
+            'charge_tolerance',
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(13),
+            help=(
+                "Tolerance for determining charge states of defects. "
+                "The charges are only considered if they represent greater "
+                "than `charge_tolerance`% of all the oxidation states of the atoms in the ICSD "
+                "data taken from: `doi.org/10.1021/acs.jpclett.0c02072`."
+                "(e.g. he smaller the value, the more charge states will be considered.) "
+                "It has been tested and values within 5-13% are reasonable."
+            ),
+        )
+        spec.input(
+            "supercell_min_length",
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(10.0),
+            help="The minimum length of the supercell."
+        )
+        spec.input(
+            "supercell_max_number_atoms",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(200),
+            help="The maximum number of atoms when generating supercell."
+        )
+        spec.input(
+            "supercell_min_number_atoms",
+            valid_type=orm.Int,
+            required=False,
+            default=orm.Int(30),
+            help="The minimum number of atoms when generating supercell."
+        )
+        spec.output(
+            "defect_entries_dict",
+            valid_type=orm.Dict,
+            required=False,
+        )
+
+    def generate_defects(self):
+        """Generate defects."""
+
+        self.report(
+            "Generating defects, adding charge states & setting up supercells."
+        )
+
+        # Generate defects with pymatgen-analysis-defects
+        defects_dict_aiida = generate_defects(
+            bulk=self.inputs.structure,
+            defect_types=self.inputs.defect_types,
+            min_length=self.inputs.supercell_min_length,
+            symprec=self.inputs.symmetry_tolerance,
+            min_atoms=self.inputs.supercell_min_number_atoms,
+            max_atoms=self.inputs.supercell_max_number_atoms,
+            force_diagonal=orm.Bool(False),
+            interstitial_min_dist=orm.Float(1.0),
+            dummy_species_str=orm.Str("X"),  # to keep track of frac coords in sc
+            charge_tolerance=self.inputs.charge_tolerance,
+        )  # type orm.Dict (not dict!)
+        # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
+        # should refactor to DefectEntrys before applying SnB
+
+        self.out("defect_entries_dict", defects_dict_aiida)
+
+
+class InterstitialScreening(WorkChain, metaclass=ABCMeta):
+    @classmethod
+    def define(cls, spec):
+        """Define inputs, outputs, and outline."""
+        super().define(spec)
+
+        spec.outline(
+            cls.screen_interstitials,
+            cls.analyse_screening_results
+        )
+
+        spec.input(
+            'structure',
+            valid_type=orm.StructureData,
+            required=False,
+            help='The host structure (primitive or conventional).'
+        )
+        spec.input(
+            'defects_dict_aiida',
+            valid_type=orm.Dict,
+            required=False,
+            help=(
+                "Dictionary with generated defects (as DefectEntries objects), formatted as "
+                "the output of DefectGenerationWorkChain"
+            )
+        )
+
+    def screen_interstitials(self):
+        """
+        Screen interstitials. For each element, select the interstitials lower
+        in energy (if difference > 1eV).
+        Also used to identify if any initial interstitial structures
+        relaxed to the same final one (in this case, only one is selected).
+
+        The screening is performed by performing Gamma point relaxations
+        (for a given element, select interstitials lower in energy).
+        """
+        self.report("Screening interstitials")
+
+        # Get composition string
+        self.ctx.composition = self.setup_composition(self.inputs.structure)
+
+        # Get interstitials with sym ineq configurations (@calcfunction):
+        self.ctx.int_dict_aiida = sort_interstitials_for_screening(
+            self.inputs.defects_dict_aiida
+        ).get_dict()  # as python dict, with DefectEntry_as_dicts!
+
+        # Get incar (same for all sym ineq interstitials)
+        structure = list(
+            list(self.ctx.int_dict_aiida.values())[0].values()
+        )[0]["sc_entry"]["structure"]
+        # Update ncore based on hpc of code:
+        self.ctx.hpc_string = self._determine_hpc()
+        self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
+        # For screening, only relax neutral:
+        defect_relax_set_dict = setup_incar_snb(
+            supercell=orm.StructureData(pymatgen_structure=structure),
+            charge=orm.Int(0),
+            incar_settings=orm.Dict(
+                {"NCORE": self.ctx.ncore}
+            ),
+        )
+        incar = defect_relax_set_dict["incar"]
+
+        # Setup KpointsData
+        self.ctx.gam_kpts = setup_gamma_kpoints()
+
+        # Setup HPC options:
+        self.ctx.number_cores_per_machine = self._setup_number_cores_per_machine(
+            hpc_string=self.ctx.hpc_string
+        )
+        self.ctx.num_nodes = self.inputs.num_nodes
+        self.ctx.options = self.setup_options(
+            hpc_string=self.ctx.hpc_string,
+            num_machines=self.ctx.num_nodes,
+            num_cores_per_machine=self.ctx.number_cores_per_machine,
+            num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+        )
+        # Setup settings for screening
+        settings = self.setup_settings(calc_type="screening")
+
+        # Submit geometry optimisations for all interstitials at the same time:
+        for general_int_name, defect_entry_dict in self.ctx.int_dict_aiida.items():
+            for defect_name, defect_entry in defect_entry_dict.items():
+                structure = defect_entry["sc_entry"]["structure"]
+                # Submit relaxation (gamma point):
+                workchain, inputs = setup_relax_inputs(
+                    code_string=self.inputs.code_string_vasp_gam.value,
+                    # aiida config:
+                    options=self.ctx.options,
+                    settings=settings,
+                    # VASP inputs:
+                    structure_data=structure,
+                    kpoints_data=self.ctx.gam_kpts, # 1,1,1
+                    incar_dict=deepcopy(incar.as_dict()),
+                    use_default_incar_settings=False,
+                    shape=False,
+                    volume=False,
+                    ionic_steps=600,
+                    # Labels:
+                    workchain_label=f"screen_{defect_name}",  # eg Te_i_s32
+                )
+                workchain = self.submit(workchain, **inputs)
+                # Add to group
+                self.add_workchain_to_group(
+                    workchain=workchain,
+                    group_label=f"defects_db/{self.ctx.composition}/02_interstitials_screening"
+                )
+                # To context:
+                key = f"screen.{defect_name}"
+                self.to_context(**{key: workchain})
+
+    def analyse_screening_results(self):
+        """
+        Analyse screening results.
+        If any initial interstitial structures relaxed to the same final one, select only one.
+        If energy difference between two interstitials is > 1eV, select the one with the lowest energy.
+        """
+        self.report("Analyse interstitial screening results")
+
+        # Loop over element speific interstitials: (Te_i, Cd_i)
+        for defect_entry_dict in self.ctx.int_dict_aiida.values():
+            energies = {}  # defect_name: energy of interstitial
+            for defect_name in defect_entry_dict:
+                # Validate workchains
+                key = f"screen.{defect_name}"
+                self.validate_finished_workchain(workchain_name=key)
+                # Parse final energy
+                energies[defect_name] = self.parse_final_energy(workchain=self.ctx[key])
+            # Compare energies:
+            lowest_energy = min(energies.values())
+            for defect_name, energy in energies.items():
+                if abs(lowest_energy) - abs(energy) > 1:
+                    # too high in energy, remove from dict
+                    self.inputs.defects_dict_aiida["interstitials"].pop(defect_name, None)
+                elif [
+                    abs(energy - stored_energy) < 0.1 for stored_energy in energies.values()
+                ]:
+                    # energy differece with other structure is too small, likely same structure
+                    # Use StructureMatcher to check
+                    # Get defect_names of structures with same energy:
+                    other_defect_name = [
+                        k for k
+                        in energies
+                        if (abs(energies[defect_name] - energy) < 0.1 and k != defect_name)
+                    ]
+                    # Get structures:
+                    structure_1 = self.parse_relaxed_structure(
+                        workchain=self.ctx[f"screen.{defect_name}"]
+                    )
+                    structure_2 = self.parse_relaxed_structure(
+                        workchain=self.ctx[f"screen.{other_defect_name}"]
+                    )
+                    if compare_structures(structure_1, structure_2):
+                        self.inputs.defects_dict_aiida["interstitials"].pop(defect_name, None)
+
+        self.out("defects_dict_aiida", self.inputs.defects_dict_aiida)
+
+
 class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     """Workflow to apply ShakeNBreak to all intrinsic defects
     for a certain host.
@@ -81,20 +360,8 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             ),
         )
 
-        spec.input(
-            'structure',
-            valid_type=orm.StructureData,
-            required=False,
-            help='The host structure (primitive or conventional).'
-        )
-        spec.input(
-            "defect_types",
-            valid_type=orm.List,
-            required=False,
-            default=orm.List(['vacancies', 'interstitials', 'antisites']),
-            help=("List of defect types to generate. "
-                "E.g: orm.List(['vacancies', 'interstitials', 'antisites'])"
-            )
+        spec.expose_inputs(
+            DefectGenerationWorkChain, namespace='defect_generation'
         )
         spec.input(
             "num_nodes",
@@ -104,48 +371,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             help=("Number of nodes to use for relaxations. "
             "Recommended values: 1 using archer2, 2 if using Young "
             "(e.g. to get aorund 60-100 cores).")
-        )
-        spec.input(
-            'symmetry_tolerance',
-            valid_type=orm.Float,
-            required=False,
-            default=orm.Float(0.01),
-            help='Symmetry tolerance for space group analysis on the input structure.',
-        )
-        spec.input(
-            'charge_tolerance',
-            valid_type=orm.Float,
-            required=False,
-            default=orm.Float(13),
-            help=(
-                "Tolerance for determining charge states of defects. "
-                "The charges are only considered if they represent greater "
-                "than `charge_tolerance`% of all the oxidation states of the atoms in the ICSD "
-                "data taken from: `doi.org/10.1021/acs.jpclett.0c02072`."
-                "(e.g. he smaller the value, the more charge states will be considered.) "
-                "It has been tested and values within 5-13% are reasonable."
-            ),
-        )
-        spec.input(
-            "supercell_min_length",
-            valid_type=orm.Float,
-            required=False,
-            default=orm.Float(10.0),
-            help="The minimum length of the supercell."
-        )
-        spec.input(
-            "supercell_max_number_atoms",
-            valid_type=orm.Int,
-            required=False,
-            default=orm.Int(200),
-            help="The maximum number of atoms when generating supercell."
-        )
-        spec.input(
-            "supercell_min_number_atoms",
-            valid_type=orm.Int,
-            required=False,
-            default=orm.Int(30),
-            help="The minimum number of atoms when generating supercell."
         )
         # Code/HPC:
         spec.input(
@@ -329,28 +554,10 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     def generate_defects(self):
         """Generate defects."""
 
-        self.report(
-            "Generating defects, adding charge states & setting up supercells."
+        defects_dict_aiida = self.submit(
+            DefectGenerationWorkChain,
+            **self.exposed_inputs(DefectGenerationWorkChain, 'defect_generation')
         )
-
-        # Generate defects with pymatgen-analysis-defects
-        relaxed_structure = self.inputs.structure
-        defects_dict_aiida = generate_defects(
-            bulk=relaxed_structure,
-            defect_types=self.inputs.defect_types,
-            min_length=self.inputs.supercell_min_length,
-            symprec=self.inputs.symmetry_tolerance,
-            min_atoms=self.inputs.supercell_min_number_atoms,
-            max_atoms=self.inputs.supercell_max_number_atoms,
-            force_diagonal=orm.Bool(False),
-            interstitial_min_dist=orm.Float(1.0),
-            dummy_species_str=orm.Str("X"),  # to keep track of frac coords in sc
-            charge_tolerance=self.inputs.charge_tolerance,
-        )  # type orm.Dict (not dict!)
-        # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
-        # should refactor to DefectEntrys here
-
-        self.ctx.defects_dict_aiida = defects_dict_aiida
         self.out("defect_entries_dict", defects_dict_aiida)
 
         # self.ctx.defects_dict = refactor_defects_dict(
@@ -635,6 +842,9 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         else:
             self.out("results", self.ctx.out_dict)
             self.report("Completed collecting ShakeNBreak results, workchain finished.")
+
+
+class BaseDefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
 
 # Below are the functions and calcfunctions used withing the above workchain:
