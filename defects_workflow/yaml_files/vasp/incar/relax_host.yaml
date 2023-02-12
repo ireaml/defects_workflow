@@ -1,6 +1,6 @@
 ALGO: Normal
 EDIFF: 1e-06 # global break condition for the electronic SC-loop
-EDIFFG: -0.01
+EDIFFG: 1e-05
 ENCUT: 450
 GGA: PE
 LHFCALC: .TRUE.

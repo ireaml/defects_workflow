@@ -36,13 +36,13 @@ def setup_incar_snb(
     the charge state of the defect (charge) and specified
     user settings (incar_settins, potcar_settins).
     """
-    vasp_input_set = _setup_incar_snb(
+    incar_dict = _setup_incar_snb(
         supercell=supercell.get_pymatgen_structure(),
         charge=charge.value,
         incar_settings=incar_settings.get_dict(),
         potcar_settings=potcar_settings.get_dict() if potcar_settings else None,
     )
-    return Dict(dict=vasp_input_set.as_dict())
+    return orm.Dict(dict=incar_dict)
 
 
 def _setup_incar_snb(
@@ -51,7 +51,7 @@ def _setup_incar_snb(
     # input_dir: str = None,
     incar_settings: dict = None,
     potcar_settings: dict = None,
-) -> VaspInputSet:
+) -> dict:
     """
     Generates input files for vasp Gamma-point-only relaxation.
 
@@ -143,5 +143,4 @@ def _setup_incar_snb(
                 )
         default_snb_incar_settings_copy.update(incar_settings)
 
-    defect_relax_set.incar = default_snb_incar_settings_copy
-    return defect_relax_set
+    return  default_snb_incar_settings_copy

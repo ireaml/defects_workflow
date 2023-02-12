@@ -310,14 +310,13 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
         self.ctx.hpc_string = self._determine_hpc()
         self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
         # For screening, only relax neutral:
-        defect_relax_set_dict = setup_incar_snb(
+        incar_Dict = setup_incar_snb(  # calcfunction
             supercell=orm.StructureData(pymatgen_structure=structure),
             charge=orm.Int(0),
             incar_settings=orm.Dict(
                 {"NCORE": self.ctx.ncore}
             ),
         )
-        incar = defect_relax_set_dict["incar"]
 
         # Setup KpointsData
         self.ctx.gam_kpts = setup_gamma_kpoints()
@@ -339,7 +338,9 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
         # Submit geometry optimisations for all interstitials at the same time:
         for general_int_name, defect_entry_dict in self.ctx.int_dict_aiida.items():
             for defect_name, defect_entry in defect_entry_dict.items():
-                structure = defect_entry["sc_entry"]["structure"]
+                structure = Structure.from_dict(
+                    defect_entry["sc_entry"]["structure"]
+                )
                 # Submit relaxation (gamma point):
                 workchain, inputs = setup_relax_inputs(
                     code_string=self.inputs.code_string_vasp_gam.value,
@@ -347,9 +348,9 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
                     options=self.ctx.options,
                     settings=settings,
                     # VASP inputs:
-                    structure_data=structure,
+                    structure_data=orm.StructureData(pymatgen_structure=structure),
                     kpoints_data=self.ctx.gam_kpts, # 1,1,1
-                    incar_dict=deepcopy(incar.as_dict()),
+                    incar_dict=deepcopy(incar_Dict.get_dict()),
                     use_default_incar_settings=False,
                     shape=False,
                     volume=False,
@@ -675,14 +676,13 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
                 structure = Structure.from_dict(
                     dist_dict["charges"][charge]["structures"]["Unperturbed"]
                 )  # dict -> Structure
-                defect_relax_set_dict = setup_incar_snb(  # calcfunction
+                incar_Dict = setup_incar_snb(  # calcfunction
                     supercell=orm.StructureData(pymatgen_structure=structure),
                     charge=orm.Int(charge),
                     incar_settings=orm.Dict(
                         {"NCORE": self.ctx.ncore}  # update ncore based on hpc of code
                     ),
                 )
-                incar = defect_relax_set_dict["incar"]
                 # Submit unperturbed structure:
 
                 # Submit each distortion:
@@ -715,7 +715,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
                         structure_data=structure,
                         kpoints_data=self.ctx.gam_kpts, # 1,1,1
                         # Incar settings:
-                        incar_dict=deepcopy(incar.as_dict()),
+                        incar_dict=deepcopy(incar_Dict.get_dict()),
                         use_default_incar_settings=False,
                         shape=False,
                         volume=False,

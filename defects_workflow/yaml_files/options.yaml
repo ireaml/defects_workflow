@@ -3,7 +3,7 @@ archer2:
       account: e05-gc-wal
       queue_name: standard
       resources:
-            num_machines: 2
+            num_machines: 1
             num_mpiprocs_per_machine: 128
             num_cores_per_machine: 128
 
@@ -14,7 +14,7 @@ archer2:
 
 # Imperial computers
 ic_young:
-      account: Gold
+      account: Free #Gold
       withmpi: True
       resources:
             parallel_env: mpi
