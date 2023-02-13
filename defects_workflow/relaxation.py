@@ -36,7 +36,7 @@ default_potcar_dict = loadfn(
 def setup_relax_inputs(
     code_string: str,
     # VASP Input:
-    structure_data: StructureData,
+    structure_data: StructureData | Structure,
     kpoints_data: KpointsData,
     # Aiida parameters:
     options: dict,
@@ -200,7 +200,10 @@ def setup_relax_inputs(
     inputs.code = Code.get_from_string(code_string)
 
     # Set structure
-    pmg_structure = structure_data.get_pymatgen_structure()
+    if isinstance(structure_data, StructureData):
+        pmg_structure = structure_data.get_pymatgen_structure()
+    elif isinstance(structure_data, Structure):
+        pmg_structure = structure_data
     inputs.structure = setup_structure(pmg_structure)
 
     # Set k-points grid density

@@ -666,8 +666,28 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
     def relax_defects(self):
         """Submit geometry optimisations for the defects."""
         self.report("relax_defects")
+        # Get composition string
+        self.ctx.composition = self.setup_composition(self.ctx.structure)
         # Setup settings
         settings = self.setup_settings(calc_type="snb")
+        # Setup options, and vasp input
+        self.ctx.hpc_string = self._determine_hpc()
+        # Setup KpointsData
+        self.ctx.gam_kpts = setup_gamma_kpoints()
+
+        # Setup HPC options:
+        self.ctx.number_cores_per_machine = self._setup_number_cores_per_machine(
+            hpc_string=self.ctx.hpc_string
+        )
+        self.ctx.num_nodes = self.inputs.num_nodes
+        self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
+        self.ctx.options = self.setup_options(
+            hpc_string=self.ctx.hpc_string,
+            num_machines=self.ctx.num_nodes,
+            num_cores_per_machine=self.ctx.number_cores_per_machine,
+            num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+        )
+
         distorted_dict = self.ctx.distorted_dict_aiida # all pmg objects as dicts
         # Loop over defects, charge states & distortions:
         for defect_name, dist_dict in distorted_dict.items():
@@ -819,7 +839,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
         num_machines: int,
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
-        time_in_hours: int=12,
+        time_in_hours: int=10,
     ):
         """Setup options for HPC with aiida."""
         return setup_options(
@@ -923,15 +943,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
 
         spec.outline(
             cls.generate_defects,
+            cls.parse_defects,
             if_(cls.should_run_screening)(
                 cls.screen_interstitials,
+                cls.parse_interstitials,
             ),
             cls.apply_shakenbreak,
-            if_(cls.should_submit_relax)(
-                cls.relax_defects,
-                cls.parse_snb_relaxations,
-                cls.results,
-            ),
+            cls.finalize,
         )
 
         # Inputs:
@@ -1028,12 +1046,27 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
     def generate_defects(self):
         """Generate defects."""
 
-        defects_Dict_aiida = self.submit(
+        defect_generation_workchain = self.submit(
             DefectGenerationWorkChain,
             **self.exposed_inputs(DefectGenerationWorkChain, "defect_generation")
         )
-        self.ctx.defects_Dict_aiida = defects_Dict_aiida  # orm.Dict
-        self.out("defect_entries_dict", defects_Dict_aiida)
+        self.to_context(
+            defect_generation_workchain=defect_generation_workchain
+        )
+
+    def parse_defects(self):
+        if "defect_generation_workchain" not in self.ctx:
+            raise ValueError("DefectGenerationWorkChain not in context")
+
+        if not self.ctx.defect_generation_workchain.is_finished_ok:
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=DefectGenerationWorkChain.__name__,
+                exit_status=self.ctx.defect_generation_workchain.exit_status
+            )
+        # All ok
+        defects_dict_aiida = self.ctx.defect_generation_workchain.outputs.defect_entries_dict
+        self.ctx.defects_Dict_aiida = defects_dict_aiida  # orm.Dict
+        self.out("defect_entries_dict", defects_dict_aiida)
 
         # self.ctx.defects_dict = refactor_defects_dict(
         #     deepcopy(defects_dict_aiida.get_dict())
@@ -1049,26 +1082,40 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         The screening is performed by performing Gamma point relaxations
         (for a given element, select interstitials lower in energy).
         """
-        self.ctx.defects_Dict_aiida = self.submit(
+        interstitial_screening_workchain = self.submit(
             InterstitialScreeningWorkChain,
             defects_dict_aiida=self.ctx.defects_Dict_aiida,
             screen_intersitials=self.inputs.screen_interstitials,
         )
+        self.to_context(
+            interstitial_screening_workchain=interstitial_screening_workchain
+        )
+
+    def parse_interstitials(self):
+        if "interstitial_screening_workchain" not in self.ctx:
+            raise ValueError("InterstitialScreeningWorkChain not in context")
+        if not self.ctx.interstitial_screening_workchain.is_finished_ok:
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=InterstitialScreeningWorkChain.__name__,
+                exit_status=self.ctx.interstitial_screening_workchain.exit_status
+            )
+        # All ok
+        self.ctx.defects_Dict_aiida = self.ctx.interstitial_screening_workchain.outputs.screened_defect_entries_dict
         self.out("screened_defect_entries_dict", self.ctx.defects_Dict_aiida)
 
     def apply_shakenbreak(self):
         """Apply ShakeNBreak."""
         inputs = {
             "code_string_vasp_gam": self.inputs.code_string_vasp_gam,
-            "num_nodes": self.inputs.code_string_vasp_gam,
+            "num_nodes": self.inputs.num_nodes,
             "defects_dict_aiida": self.ctx.defects_Dict_aiida,
             "submit_relaxations": self.inputs.submit_relaxations,
         }
-        self.submit(
+        shakenbreak_workchain = self.submit(
             ShakeNBreakWorkChain,
             **inputs,
         )
-
+        self.to_context(shakenbreak_workchain=shakenbreak_workchain)
         # output_Dict = apply_shakenbreak(  # calcfunction
         #     defects_Dict=self.ctx.defects_Dict_aiida  # dict with all pmg objects as dicts
         # )
@@ -1090,6 +1137,24 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         #        }
         #    }
         # }
+
+    def finalize(self):
+        """Append ShakeNBreak results."""
+        if "shakenbreak_workchain" not in self.ctx:
+            raise RuntimeError(f"Workchain shakenbreak_workchain not found in context.")
+        if self.ctx.shakenbreak_workchain.is_finished_ok:
+            self.out_many(
+                self.exposed_outputs(self.ctx.shakenbreak_workchain, ShakeNBreakWorkChain)
+            )
+            return self.exit_codes.NO_ERROR
+        else:
+            self.out_many(
+                self.exposed_outputs(self.ctx.shakenbreak_workchain, ShakeNBreakWorkChain)
+            )
+            return self.exit_codes.ERROR_SUB_PROCESS_FAILED.format(
+                cls=ShakeNBreakWorkChain.__name__,
+                exit_status=self.ctx.shakenbreak_workchain.exit_status,
+            )
 
     # General methods:
     def setup_composition(self, structure_data: orm.StructureData):
