@@ -200,6 +200,13 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             "Recommended values: 1 using archer2, 2 if using Young "
             "(e.g. to get aorund 60-100 cores).")
         )
+        spec.input(
+            "priority",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(False),
+            help=("Whether to run calculations in priority/gold or free queue. ")
+        )
         # Outputs:
         spec.output(
             "defects_dict_aiida",
@@ -331,6 +338,7 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=self.ctx.num_nodes,
             num_cores_per_machine=self.ctx.number_cores_per_machine,
             num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+            priority=self.inputs.priority,
         )
         # Setup settings for screening
         settings = self.setup_settings(calc_type="screening")
@@ -446,7 +454,8 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
         num_machines: int,
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
-        time_in_hours: int=12,
+        time_in_hours: int=10,  # TODO: this should be a parameter
+        priority: bool=False,
     ):
         """Setup options for HPC with aiida."""
         return setup_options(
@@ -454,7 +463,8 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=num_machines,
             num_mpiprocs_per_machine=num_mpiprocs_per_machine,
             num_cores_per_machine=num_cores_per_machine,
-            time_in_hours=time_in_hours
+            time_in_hours=time_in_hours,
+            priority=priority,
         )
 
     def setup_settings(self, calc_type: str="screening"):
@@ -572,6 +582,13 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             "Recommended values: 1 using archer2, 2 if using Young "
             "(e.g. to get aorund 60-100 cores).")
         )
+        spec.input(
+            "priority",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(False),
+            help=("Whether to run calculations in priority/gold or free queue. ")
+        )
         # Outputs:
         spec.output(
             'results',
@@ -686,6 +703,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=self.ctx.num_nodes,
             num_cores_per_machine=self.ctx.number_cores_per_machine,
             num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+            priority=self.inputs.priority,
         )
 
         distorted_dict = self.ctx.distorted_dict_aiida # all pmg objects as dicts
@@ -840,6 +858,7 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
         time_in_hours: int=10,
+        priority: bool=False,
     ):
         """Setup options for HPC with aiida."""
         return setup_options(
@@ -847,7 +866,8 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=num_machines,
             num_mpiprocs_per_machine=num_mpiprocs_per_machine,
             num_cores_per_machine=num_cores_per_machine,
-            time_in_hours=time_in_hours
+            time_in_hours=time_in_hours,
+            priority=priority,
         )
 
     def setup_settings(self, calc_type: str="screening"):
@@ -983,6 +1003,13 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             "(e.g. to get aorund 60-100 cores).")
         )
         spec.input(
+            "priority",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(False),
+            help=("Whether to run calculations in priority/gold or free queue. ")
+        )
+        spec.input(
             "screen_interstitials",
             valid_type=orm.Bool,
             required=False,
@@ -1082,10 +1109,14 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         The screening is performed by performing Gamma point relaxations
         (for a given element, select interstitials lower in energy).
         """
+        inputs = {
+            "defects_dict_aiida": self.ctx.defects_Dict_aiida,
+            "screen_intersitials": self.inputs.screen_interstitials,
+            "priority": self.inputs.priority,
+        }
         interstitial_screening_workchain = self.submit(
             InterstitialScreeningWorkChain,
-            defects_dict_aiida=self.ctx.defects_Dict_aiida,
-            screen_intersitials=self.inputs.screen_interstitials,
+            **inputs
         )
         self.to_context(
             interstitial_screening_workchain=interstitial_screening_workchain
@@ -1108,6 +1139,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         inputs = {
             "code_string_vasp_gam": self.inputs.code_string_vasp_gam,
             "num_nodes": self.inputs.num_nodes,
+            "priority": self.inputs.priority,
             "defects_dict_aiida": self.ctx.defects_Dict_aiida,
             "submit_relaxations": self.inputs.submit_relaxations,
         }
@@ -1190,6 +1222,7 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
         time_in_hours: int=12,
+        priority: bool=False,
     ):
         """Setup options for HPC with aiida."""
         return setup_options(
@@ -1197,7 +1230,8 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=num_machines,
             num_mpiprocs_per_machine=num_mpiprocs_per_machine,
             num_cores_per_machine=num_cores_per_machine,
-            time_in_hours=time_in_hours
+            time_in_hours=time_in_hours,
+            priority=priority,
         )
 
     def setup_settings(self, calc_type: str="snb"):

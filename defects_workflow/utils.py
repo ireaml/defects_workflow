@@ -100,6 +100,7 @@ def setup_options(
     num_mpiprocs_per_machine: int=128,  # assume archer2
     num_cores_per_machine: int=128,  # assume archer2
     time_in_hours: int=24,
+    priority: bool=True,
 ):
     """Setup HPC options for the workchain.
     This depends on the hpc chosen by user.
@@ -123,6 +124,10 @@ def setup_options(
                     "parallel_env": "mpi"
                 },
             'max_wallclock_seconds': int(time_in_hours*3600),
+        })
+        # Update Queue priority
+        options.update({
+            'queue_name': 'Gold' if priority else 'Free'
         })
     return options
 

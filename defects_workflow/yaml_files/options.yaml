@@ -2,6 +2,7 @@
 archer2:
       account: e05-gc-wal
       queue_name: standard
+      qos: standard  # High priority queue!
       resources:
             num_machines: 1
             num_mpiprocs_per_machine: 128
