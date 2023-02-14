@@ -333,7 +333,7 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         # group_label=f"defects_db/{self.inputs.mp_id}/01_relax_host"
         # key = "host.relax.isif_3"
         # return ToContext(**{key: workchain})
-        return self.to_context(host_relax_isif_3=workchain)
+        self.to_context(host_relax_isif_3=workchain)
 
     def inspect_relax_isif_3(self):
         """Validate that the workchain finished successfully."""
@@ -387,7 +387,7 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         )
         workchain = self.submit(workchain, **inputs)
         #group_label=f"defects_db/{self.inputs.mp_id}/01_relax_host",
-        return self.to_context(host_relax_isif_3=workchain)
+        self.to_context(host_relax_isif_3=workchain)
 
     def inspect_relax_isif_1(self):
         """Validate that the relaxation finished successfully."""
