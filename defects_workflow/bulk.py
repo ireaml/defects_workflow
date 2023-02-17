@@ -8,7 +8,7 @@ from copy import deepcopy
 from monty.serialization import loadfn
 import math
 
-from aiida.engine import WorkChain, ToContext, append_, calcfunction
+from aiida.engine import WorkChain, ToContext, append_, calcfunction, if_
 from aiida import orm
 from aiida.common.exceptions import NotExistent
 from aiida.tools.groups import GroupPath
@@ -66,6 +66,7 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Float(900),
             help='K-points density for the relaxation (as used in pymatgen `automatic_density` method).',
         )
+        # HPC related inputs:
         spec.input(
             'code_string_vasp_std',
             valid_type=orm.Str,
@@ -73,11 +74,43 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Str("vasp_std_6.3.0"),  # default is vasp_std in archer2
             help='Code string for vasp_std',
         )
+        spec.input(
+            "priority",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(False),
+            help=("Whether to run calculations in priority/gold or free queue. ")
+        )
+        spec.input(
+            "account",
+            valid_type=orm.Str,
+            required=False,
+            default=None,
+            help=("Account to use for the calculations. ")
+        )
+        spec.input(
+            "time_in_hours",
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(24),
+            help=("Time in hours to use for the calculations. ")
+        )
+        spec.input(
+            "submit_isif_3",
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(True),
+            help=("Whether to submit a volume relaxation (ISIF=3) or not. ")
+        )
         spec.outline(
             cls.query_mp,
             cls.setup_vasp_inputs,
-            cls.relax_host_isif_3,
-            cls.inspect_relax_isif_3,
+            if_(cls.should_submit_isif_3)(
+                cls.relax_host_isif_3,
+                cls.inspect_relax_isif_3,
+            ).else_(
+                cls.setup_isif_1,
+            ),
             cls.relax_host_isif_1,
             cls.inspect_relax_isif_1,
             cls.store_relaxed,
@@ -148,14 +181,18 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         num_mpiprocs_per_machine: int=128,  # assume archer2
         num_cores_per_machine: int=128,  # assume archer2
         time_in_hours: int=24,
+        priority: bool=False,
+        account: str=None,
     ) -> dict:
         """Setup options for HPC with aiida."""
         return setup_options(
-            hpc_string,
-            num_machines,
-            num_mpiprocs_per_machine,
-            num_cores_per_machine,
-            time_in_hours
+            hpc_string=hpc_string,
+            num_machines=num_machines,
+            num_mpiprocs_per_machine=num_mpiprocs_per_machine,
+            num_cores_per_machine=num_cores_per_machine,
+            time_in_hours=time_in_hours,
+            priority=priority,
+            account=account,
         )
 
     def _determine_kpar_n_num_cores(
@@ -186,7 +223,6 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         # Check multiple of NPAR (not too many extra bands)
         # num_cores_per_kpar_ncore = num_cores / (kpar * ncore)
         return num_nodes, kpar
-
 
     def _setup_number_cores_per_machine(self, hpc_string: str) -> int:
         """Determine number of cores based on HPC name."""
@@ -289,6 +325,16 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         # Specify VASP output files that should be retrieved:
         self.ctx.settings = self.setup_setings()
 
+    def should_submit_isif_3(self):
+        if self.inputs.submit_isif_3:
+            return True
+        else:
+            return False
+
+    def setup_isif_1(self):
+        self.ctx.relaxed_structure = self.ctx.structure
+        self.ctx.time_in_hours = self.inputs.time_in_hours
+
     def relax_host_isif_3(self):
         """Relax the host structure."""
         # Setup INCAR (specific for ISIF=3 relaxation):
@@ -307,6 +353,9 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=self.ctx.num_nodes,
             num_cores_per_machine=self.ctx.number_cores_per_machine,
             num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+            time_in_hours=self.inputs.time_in_hours.value,
+            priority=self.inputs.priority.value,
+            account=self.inputs.account.value,
         )
         # Setup workchain:
         workchain, inputs = setup_relax_inputs(
@@ -367,6 +416,19 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
                 "NCORE": self.ctx.ncore,
                 "ISIF": 2,
             }
+        )
+        # Setup HPC options:
+        if "time_in_hours" not in self.ctx:
+            self.ctx.time_in_hours = 10
+
+        self.ctx.options = self.setup_options(
+            hpc_string=self.ctx.hpc_string,
+            num_machines=self.ctx.num_nodes,
+            num_cores_per_machine=self.ctx.number_cores_per_machine,
+            num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
+            time_in_hours=self.ctx.time_in_hours,  # small, cause already relaxed with ISIF=3
+            priority=self.inputs.priority.value,
+            account=self.inputs.account.value,
         )
         # Submit workchain:
         workchain, inputs = setup_relax_inputs(

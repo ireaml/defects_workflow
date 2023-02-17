@@ -338,7 +338,7 @@ class InterstitialScreeningWorkChain(WorkChain, metaclass=ABCMeta):
             num_machines=self.ctx.num_nodes,
             num_cores_per_machine=self.ctx.number_cores_per_machine,
             num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
-            priority=self.inputs.priority,
+            priority=self.inputs.priority.value,
         )
         # Setup settings for screening
         settings = self.setup_settings(calc_type="screening")
@@ -589,6 +589,13 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Bool(False),
             help=("Whether to run calculations in priority/gold or free queue. ")
         )
+        spec.input(
+            "time_in_hours",
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(10.0),
+            help=("Time (in hours) for each ShakeNBreak relaxation. ")
+        )
         # Outputs:
         spec.output(
             'results',
@@ -700,10 +707,11 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
         self.ctx.ncore = self._get_ncore(hpc_string=self.ctx.hpc_string)
         self.ctx.options = self.setup_options(
             hpc_string=self.ctx.hpc_string,
-            num_machines=self.ctx.num_nodes,
+            num_machines=self.ctx.num_nodes.value,
             num_cores_per_machine=self.ctx.number_cores_per_machine,
             num_mpiprocs_per_machine=self.ctx.number_cores_per_machine,
-            priority=self.inputs.priority,
+            priority=self.inputs.priority.value,
+            time_in_hours=self.inputs.time_in_hours.value,
         )
 
         distorted_dict = self.ctx.distorted_dict_aiida # all pmg objects as dicts
@@ -1293,7 +1301,6 @@ class DefectsWorkChain(WorkChain, metaclass=ABCMeta):
         self.report(
             f'{cls}<{self.ctx.workchain.pk}> finished successfully.'
         )
-
 
 
 # Below are the functions and calcfunctions used withing the above workchain:

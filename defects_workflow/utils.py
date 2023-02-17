@@ -101,6 +101,7 @@ def setup_options(
     num_cores_per_machine: int=128,  # assume archer2
     time_in_hours: int=24,
     priority: bool=True,
+    account: str=None,
 ):
     """Setup HPC options for the workchain.
     This depends on the hpc chosen by user.
@@ -116,6 +117,14 @@ def setup_options(
                 },
             'max_wallclock_seconds': int(time_in_hours*3600),
         })
+        options.update({
+            "qos": "standard" if priority else "lowpriority"
+        })
+        # Update account if specified
+        if account in [
+            "e05-pool", "e05-gc-wal", "e05-discov-wal", "e05-free", "e05-low"
+        ]:
+            options["account"] = account
     elif "young" in hpc_string.lower():
         options.update({
             'resources':
@@ -127,7 +136,7 @@ def setup_options(
         })
         # Update Queue priority
         options.update({
-            'queue_name': 'Gold' if priority else 'Free'
+            'account': 'Gold' if priority else 'Free'
         })
     return options
 
