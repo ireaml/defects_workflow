@@ -56,6 +56,7 @@ class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
         supercell_max_number_atoms: Int
         supercell_min_number_atoms: Int
         charge_tolerance: Float
+        only_neutral_defects: Bool
 
     Returns:
         defect_entries_dict (Dict)
@@ -106,17 +107,26 @@ class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
             ),
         )
         spec.input(
+            'only_neutral_defects',
+            valid_type=orm.Bool,
+            required=False,
+            default=orm.Bool(False),
+            help=(
+                "Whether to only generate the neutral charge state of the defects."
+            ),
+        )
+        spec.input(
             "supercell_min_length",
             valid_type=orm.Float,
             required=False,
-            default=orm.Float(10.0),
+            default=orm.Float(9.5),
             help="The minimum length of the supercell."
         )
         spec.input(
             "supercell_max_number_atoms",
             valid_type=orm.Int,
             required=False,
-            default=orm.Int(200),
+            default=orm.Int(150),
             help="The maximum number of atoms when generating supercell."
         )
         spec.input(
@@ -151,6 +161,7 @@ class DefectGenerationWorkChain(WorkChain, metaclass=ABCMeta):
             interstitial_min_dist=orm.Float(1.0),
             dummy_species_str=orm.Str("X"),  # to keep track of frac coords in sc
             charge_tolerance=self.inputs.charge_tolerance,
+            only_neutral_defects=self.inputs.only_neutral_defects,
         )  # type orm.Dict (not dict!)
         # In defects_dict_aiida, DefectEntries are stored as `dictionaries`,
         # should refactor to DefectEntrys before applying SnB
@@ -596,6 +607,13 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
             default=orm.Float(10.0),
             help=("Time (in hours) for each ShakeNBreak relaxation. ")
         )
+        spec.input(
+            "encut",
+            valid_type=orm.Float,
+            required=False,
+            default=orm.Float(350.0),
+            help=("Energy cutoff for the ShakeNBreak relaxation. ")
+        )
         # Outputs:
         spec.output(
             'results',
@@ -726,7 +744,10 @@ class ShakeNBreakWorkChain(WorkChain, metaclass=ABCMeta):
                     supercell=orm.StructureData(pymatgen_structure=structure),
                     charge=orm.Int(charge),
                     incar_settings=orm.Dict(
-                        {"NCORE": self.ctx.ncore}  # update ncore based on hpc of code
+                        {
+                            "NCORE": self.ctx.ncore,  # update ncore based on hpc of code
+                            "ENCUT": self.inputs.encut.value,  # by default 350. SnB default is 300
+                        }
                     ),
                 )
                 # Submit unperturbed structure:

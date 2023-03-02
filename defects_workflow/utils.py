@@ -10,6 +10,7 @@ from mp_api.client import MPRester
 from pymatgen.io.vasp.inputs import Kpoints
 from pymatgen.core.structure import Structure
 from pymatgen.analysis.structure_matcher import StructureMatcher
+from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 # aiida
 from aiida.plugins import DataFactory, WorkflowFactory
@@ -41,6 +42,9 @@ def query_materials_project(
     )
     # Get primitive cell
     prim = data[0].structure.get_primitive_structure()
+    # Just sanity checking with SpacegroupAnalyzer
+    sa = SpacegroupAnalyzer(prim)
+    prim = sa.get_primitive_standard_structure()
     return StructureData(pymatgen_structure=prim)
 
 

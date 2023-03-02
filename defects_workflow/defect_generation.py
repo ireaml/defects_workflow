@@ -88,6 +88,7 @@ def _generate_defects(
 def add_charge_states(
     defect_dict: dict,
     charge_tolerance: float=13,
+    only_neutral_defects: bool=False,
 ):
     """Specify the charge states for each defect, storing them under the
     .user_charges attibute.
@@ -102,6 +103,8 @@ def add_charge_states(
         {"vacancies": [Defect, ...], "interstitials": [...], "antisites": [],}
     charge_tolerance (float, optional):
         Tolerance for charge states. Defaults to 25(%).
+    only_neutral_defects (list[int], optional):
+        Whether to only generate neutral defects.
 
     Returns:
     defect_dict (dict):
@@ -135,6 +138,13 @@ def add_charge_states(
             if 0 not in charges:
                 charges = extend_list_to_zero(charges)
             return sorted(charges)
+
+    if only_neutral_defects:
+        user_charges = [0, ]
+        for defect_type, defect_subdict in defect_dict.items():
+            for defect in defect_subdict.values():
+                defect.user_charges = user_charges
+        return defect_dict
 
     for defect_type, defect_subdict in defect_dict.items():
         if defect_type  == "interstitials":
@@ -272,6 +282,7 @@ def generate_defects(
     min_length: Float = Float(10),
     force_diagonal: Bool = Bool(False),
     charge_tolerance: Float = Float(13),
+    only_neutral_defects: Bool = Bool(False),
 ) -> Dict:
     """Generate defects, add reasonable charge states (based on common
     elemenet oxidation states) and setup supercell.
@@ -297,7 +308,13 @@ def generate_defects(
             Minimum length of supercell. Defaults to Float(10).
         force_diagonal (Bool, optional):
             Force diagonal supercell. Defaults to Bool(False
-
+        charge_tolerance: (Float, optional):
+            Charge tolerance to determine defect charge states. It
+            corresponds to the minimum % abundance of that oxidation state
+            for the defect element.
+            Defaults to Float(13).
+        only_neutral_defects (Bool, optional):
+            Whether to only generate neutral defects. Defaults to Bool(False).
     Returns:
         Dict: Dictionary of DefectEntries, with keys "vacancies", "antisites" and
             "interstitials", e.g.:
@@ -319,6 +336,7 @@ def generate_defects(
     defects_dict = add_charge_states(
         defect_dict=defects_dict,
         charge_tolerance=charge_tolerance.value,
+        only_neutral_defects=only_neutral_defects.value,
     )
     # Generate supercell defect structure, and refactor
     # Defect to DefectEntry objects

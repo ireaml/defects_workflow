@@ -216,10 +216,14 @@ class BulkWorkChain(WorkChain, metaclass=ABCMeta):
         num_nodes, kpar = max(
             {
                 num_nodes: math.gcd(num_irr_kpts, int(num_nodes * cores_per_ncore))
-                for num_nodes in range(1, 4)
+                for num_nodes in range(1, 3)
             }.items(),
             key=lambda x: x[1]
         )
+        # Make sure KPAR not too large (mem issues)
+        if kpar >= 16:
+            if kpar % 2 == 0:
+                kpar = kpar // 2
         # Check multiple of NPAR (not too many extra bands)
         # num_cores_per_kpar_ncore = num_cores / (kpar * ncore)
         return num_nodes, kpar
