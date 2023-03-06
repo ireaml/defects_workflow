@@ -1,0 +1,2 @@
+# Todo's
+1. The supercell matrix should be found for bulk, and then used for all defects, rather than finding it for each defect (curently using the `pymatgen.analysis.defects.Defect` ¡`get_supercell_structure` method).

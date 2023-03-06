@@ -222,7 +222,9 @@ def generate_defect_entries(
         supercell_struct = supercell_struct.copy() # Don't want to modify original!
         # Find frac coord of dummy species & remove it from supercell
         dummy_site = [
-            site for site in supercell_struct if site.species.elements[0].symbol == dummy_species.symbol
+            site
+            for site in supercell_struct
+            if site.species.elements[0].symbol == dummy_species.symbol
         ][0]
         sc_defect_frac_coords = dummy_site.frac_coords
         supercell_struct.remove(dummy_site)
@@ -253,7 +255,8 @@ def generate_defect_entries(
                 min_atoms=min_atoms,
                 min_length=min_length,
                 force_diagonal=force_diagonal,
-            ).copy()
+            ).copy()  # TODO: more efficient to find sc_mat for bulk (so only once), and then use
+            # that for all defects
             defect_entries[defect_name] = []
             for charge_state in defect.user_charges:
                 defect_entries[defect_name].append(
