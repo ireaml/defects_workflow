@@ -60,7 +60,7 @@ pip install ./defectivator
 ```
 git clone https://github.com/SMTG-UCL/shakenbreak.git
 cd shakenbreak
-git checkout dev
+git checkout dimer
 cd ../
 pip install ./shakenbreak
 ```

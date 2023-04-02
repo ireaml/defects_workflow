@@ -30,13 +30,13 @@ from defectivator.tools import get_charges, group_ions, extend_list_to_zero
 # TODO: Best to refactor to only do supercell computation for one defect, store matrix
 # And use that for other defects
 
-def _generate_defects(
+def _create_defects(
     bulk: Structure | StructureData,
     symprec: float=0.01,
     angle_tolerance: float=5,
     interstitial_min_dist: float=0.9,
     defect_types: list[str]=["vacancies", "antisites", "interstitials"],
-):
+) -> dict:
     """
     Generate all intrinsic defects for a given conventional or primitive
     structure.
@@ -89,7 +89,7 @@ def add_charge_states(
     defect_dict: dict,
     charge_tolerance: float=13,
     only_neutral_defects: bool=False,
-):
+) -> dict:
     """Specify the charge states for each defect, storing them under the
     .user_charges attibute.
     These are determined by considering the abundance of each oxidation state for
@@ -187,27 +187,27 @@ def generate_defect_entries(
     min_length: float = 10,
     force_diagonal: bool = False,
     dummy_species: DummySpecies=DummySpecies("X"),
-):
+) -> dict:
     """
     Generate a DefectEntry for each charge state of the Defect.
     Set up supercell for each DefectEntry (accessible as DefectEntry.sc_entry.structure)
     and charge state (accessible as DefectEntry.charge_state).
 
     Args:
-    defects_dict (dict):
-        Dictionary of Defects, with keys "vacancies", "antisites" and "interstitials".
-    sc_mat (np.ndarray, optional):
-    dummy_species (str, optional):
-    min_atoms (int, optional):
-        Minimum number of atoms in supercell. Defaults to 80.
-    max_atoms (int, optional):
-        Maximum number of atoms in supercell. Defaults to 140.
-    min_length (float, optional):
-        Minimum length of supercell. Defaults to 10.
-    force_diagonal (bool, optional):
+        defects_dict (dict):
+            Dictionary of Defects, with keys "vacancies", "antisites" and "interstitials".
+        sc_mat (np.ndarray, optional):
+        dummy_species (str, optional):
+        min_atoms (int, optional):
+            Minimum number of atoms in supercell. Defaults to 80.
+        max_atoms (int, optional):
+            Maximum number of atoms in supercell. Defaults to 140.
+        min_length (float, optional):
+            Minimum length of supercell. Defaults to 10.
+        force_diagonal (bool, optional):
 
     Returns:
-    defects_dict (dict):
+        defects_dict (dict):
         Dictionary of DefectEntries, with keys "vacancies", "antisites"
         and "interstitials".
     """
@@ -244,6 +244,9 @@ def generate_defect_entries(
             "dummy_species must be specified! This is used to keep track"
             " of the defect coordinates in the supercell."
         )
+    # First search for best supercell (only one defect)
+    # then we use the sc_matrix for all defects
+
     for key, value in defects_dict.items():  # for defect type (e.g. vacancies)
         defect_entries = {}
         for defect_name, defect in value.items():
@@ -269,6 +272,87 @@ def generate_defect_entries(
                 )
         defects_dict[key] = deepcopy(defect_entries)  # for each defect type, dict of DefectEntries
     return defects_dict
+
+
+def _generate_defects(
+    bulk: Structure,
+    defect_types: list=['vacancies', 'interstitials', 'antisites'],
+    symprec: float=0.01,  # default in pmg.analysis.defects
+    angle_tolerance: int=5,
+    interstitial_min_dist: float=1.0,
+    sc_mat: np.array | None = None,
+    dummy_species_str: str | None = "X",
+    min_atoms: int = 20,
+    max_atoms: int = 140,
+    min_length: float = 10,
+    force_diagonal: bool = False,
+    charge_tolerance: float = 13,
+    only_neutral_defects: bool = False,
+) -> dict:
+    """
+    Generate defects, add reasonable charge states (based on common
+    element oxidation states) and setup supercell.
+
+    Args:
+        bulk (Structure):
+            Bulk structure.
+        symprec (float, optional):
+            Symmetry precision. Defaults to 0.01.
+        angle_tolerance (int, optional):
+            Angle tolerance. Defaults to 5.
+        interstitial_min_dist (float, optional):
+            Minimum distance for interstitials. Defaults to 0.9.
+        sc_mat (np.array, optional):
+            Supercell matrix. Defaults to None.
+        dummy_species_str (str, optional):
+            Symbol of dummy species (as string). Defaults to None.
+        min_atoms (int, optional):
+            Minimum number of atoms in supercell. Defaults to 80.
+        max_atoms (int, optional):
+            Maximum number of atoms in supercell. Defaults to 140.
+        min_length (float, optional):
+            Minimum length of supercell. Defaults to 10.
+        force_diagonal (bool, optional):
+            Force diagonal supercell. Defaults to False
+        charge_tolerance: (float, optional):
+            Charge tolerance to determine defect charge states. It
+            corresponds to the minimum % abundance of that oxidation state
+            for the defect element.
+            Defaults to 13.
+        only_neutral_defects (bool, optional):
+            Whether to only generate neutral defects. Defaults to False.
+    Returns:
+        dict: Dictionary of DefectEntries, with keys "vacancies", "antisites" and
+            "interstitials", e.g.:
+            {"vacancies": [defect_name: [DefectEntry, DefectEntry,] ...],
+            "antitists": [defect_name: [DefectEntry, DefectEntry,], ...], ...}
+    """
+
+    defects_dict = _create_defects(
+        bulk,
+        symprec,
+        angle_tolerance,
+        interstitial_min_dist,
+        defect_types,
+    )
+    # Add charge states, based on common element oxi states
+    defects_dict = add_charge_states(
+        defect_dict=defects_dict,
+        charge_tolerance=charge_tolerance,
+        only_neutral_defects=only_neutral_defects,
+    )
+    # Generate supercell defect structure, and refactor
+    # Defect to DefectEntry objects
+    defect_entries_dict = generate_defect_entries(
+        defects_dict=defects_dict,
+        sc_mat=sc_mat if sc_mat else None,
+        dummy_species=DummySpecies(symbol=dummy_species_str),
+        min_atoms=min_atoms,
+        max_atoms=max_atoms,
+        min_length=min_length,
+        force_diagonal=force_diagonal,
+    )
+    return defect_entries_dict
 
 
 @calcfunction
@@ -328,29 +412,21 @@ def generate_defects(
     # done in one calcfunction because DefectEntry/Defect
     # objects need to be converted to dicts for aiida to store them.)
 
-    defects_dict = _generate_defects(
+    # Create defects, add charge states and setup supercell
+    defect_entries_dict = _generate_defects(
         bulk.get_pymatgen_structure(),
-        symprec.value,
-        angle_tolerance.value,
-        interstitial_min_dist.value,
-        defect_types.get_list(),
-    )
-    # Add charge states, based on common element oxi states
-    defects_dict = add_charge_states(
-        defect_dict=defects_dict,
-        charge_tolerance=charge_tolerance.value,
-        only_neutral_defects=only_neutral_defects.value,
-    )
-    # Generate supercell defect structure, and refactor
-    # Defect to DefectEntry objects
-    defect_entries_dict = generate_defect_entries(
-        defects_dict=defects_dict,
+        defect_types=defect_types.get_list(),
+        symprec=symprec.value,
+        angle_tolerance=angle_tolerance.value,
+        interstitial_min_dist=interstitial_min_dist.value,
         sc_mat=sc_mat.get_array() if sc_mat else None,
-        dummy_species=DummySpecies(symbol=dummy_species_str.value),
+        dummy_species_str=dummy_species_str.value,
         min_atoms=min_atoms.value,
         max_atoms=max_atoms.value,
         min_length=min_length.value,
         force_diagonal=force_diagonal.value,
+        charge_tolerance=charge_tolerance.value,
+        only_neutral_defects=only_neutral_defects.value,
     )
     # Transform DefectEntry to dict -> Dict (for AiiDA)
     for key, value_dict in defect_entries_dict.items():  # for defect type (e.g. vacancies)
@@ -396,3 +472,4 @@ def sort_interstitials_for_screening(
     if not dict_interstitials:
         warnings.warn("No interstitials found for screening.")
     return Dict(dict=dict_interstitials)
+
