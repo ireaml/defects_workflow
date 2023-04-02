@@ -3,7 +3,7 @@
 from __future__ import annotations
 import numpy as np
 import warnings
-from copy import deepcopy
+from copy import deepcopy, copy
 import warnings
 
 from pymatgen.core.structure import Structure
@@ -18,6 +18,7 @@ from pymatgen.analysis.defects.generators import (
 )
 from pymatgen.analysis.defects.core import Defect
 from pymatgen.analysis.defects.thermo import DefectEntry
+from pymatgen.analysis.defects.supercells import get_sc_fromstruct
 
 from aiida.orm import Dict, Float, Int, Bool, Str, List, StructureData, ArrayData
 from aiida.engine import calcfunction, workfunction
@@ -179,6 +180,68 @@ def add_charge_states(
     return defect_dict
 
 
+def generate_sc_mat(
+    bulk_structure: Structure,
+    min_atoms: int=40,
+    max_atoms: int=120,
+    min_length: float=10.0,
+    force_diagonal: bool=False,
+    sc_mat: np.array=None,
+):
+    limit_max_atoms = 200
+    increase_max_atoms = 10
+    if not sc_mat:
+        try:
+            sc_mat = get_sc_fromstruct(
+                base_struct=bulk_structure,
+                min_atoms=min_atoms,
+                max_atoms=max_atoms,
+                min_length=min_length,
+                force_diagonal=force_diagonal,
+            )
+        except RuntimeError as exc:
+            # If couldnt find supercell, loose constraints and try again
+            if max_atoms > limit_max_atoms:
+                raise RuntimeError(
+                    "Could not find supercell for structure with less that "
+                    f"{limit_max_atoms} atoms."
+                ) from exc
+            while not sc_mat and max_atoms <= 220:
+                max_atoms += increase_max_atoms
+                print(
+                    f"Increasing supercell max_atoms to {max_atoms} to satisfy"
+                    " min_length constraint."
+                )
+                sc_mat = get_sc_fromstruct(
+                    base_struct=bulk_structure,
+                    min_atoms=min_atoms,
+                    max_atoms=max_atoms,
+                    min_length=min_length,
+                    force_diagonal=force_diagonal,
+                )
+    # Check if min_length is satisfied (ase method doesn't ensure it)
+    sc_structure = bulk_structure * sc_mat
+    while any(
+        [d < min_length for d in sc_structure.lattice.abc]
+        #[abs(d - min_length) > 0.1 for d in sc_structure.lattice.abc[i]]
+    ):
+        max_atoms += increase_max_atoms
+        print(
+            f"Increasing supercell max_atoms to {max_atoms} to satisfy"
+            " min_length constraint."
+        )
+        sc_mat = get_sc_fromstruct(
+            base_struct=bulk_structure,
+            min_atoms=min_atoms,
+            max_atoms=max_atoms,
+            min_length=min_length,
+            force_diagonal=force_diagonal,
+        )
+        sc_structure = bulk_structure * sc_mat
+
+    return sc_mat
+
+
 def generate_defect_entries(
     defects_dict: dict,
     sc_mat: np.ndarray | None = None,
@@ -244,22 +307,30 @@ def generate_defect_entries(
             "dummy_species must be specified! This is used to keep track"
             " of the defect coordinates in the supercell."
         )
-    # First search for best supercell (only one defect)
+    # Search best supercell of the pristine structure
     # then we use the sc_matrix for all defects
+    bulk = list(defects_dict["vacancies"].values())[0].structure
+    if not sc_mat:
+        sc_mat = generate_sc_mat(
+            bulk_structure=bulk,
+            min_atoms=min_atoms,
+            max_atoms=max_atoms,
+            min_length=min_length,
+            force_diagonal=force_diagonal,
+        )
 
     for key, value in defects_dict.items():  # for defect type (e.g. vacancies)
         defect_entries = {}
         for defect_name, defect in value.items():
             # Get supercell only once for each defect (no need to repeat for charge states)
             supercell_struct = defect.get_supercell_structure(
-                sc_mat=sc_mat,
+                sc_mat=copy(sc_mat),  # using the sc_mat determined for the bulk
                 dummy_species=dummy_species,  # for vacancies, to get defect frac coords in supercell
                 max_atoms=max_atoms,
                 min_atoms=min_atoms,
                 min_length=min_length,
                 force_diagonal=force_diagonal,
-            ).copy()  # TODO: more efficient to find sc_mat for bulk (so only once), and then use
-            # that for all defects
+            ).copy()
             defect_entries[defect_name] = []
             for charge_state in defect.user_charges:
                 defect_entries[defect_name].append(

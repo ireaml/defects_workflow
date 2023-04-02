@@ -8,7 +8,7 @@ from pymatgen.core.structure import Structure
 
 from shakenbreak.input import Distortions
 
-from defect_generation import _generate_defects
+from defects_workflow.defect_generation import _generate_defects
 
 class SnBVacancy():
 
@@ -39,6 +39,7 @@ class SnBVacancy():
         self.supercell_max_number_atoms = supercell_max_number_atoms
         self.supercell_min_number_atoms = supercell_min_number_atoms
         self.supercell_min_length = supercell_min_length
+        self.defects = None
 
     def generate_defects(self):
         """Generate defects.
@@ -60,13 +61,13 @@ class SnBVacancy():
 
         return self.defects
 
-    def get_cation_vacancies(self):
+    def generate_cation_vacancies(self):
         """Get cation vacancies.
 
         Returns:
             cation_vacancies (list): List of cation vacancies.
         """
-        if self.defects is None:
+        if not self.defects:
             self.generate_defects()
 
         # Only select vacancies
@@ -84,21 +85,27 @@ class SnBVacancy():
 
         return self.cation_vacancies
 
-    def apply_snb(
+    def apply_shakenbreak(
         self,
         defects: dict,
         ncore: int = 10,
         encut: int = 350,
+        output_path: str = None,
     ):
         """Apply ShakeNBreak to defects"""
         # Create directory for composition
-        if not os.path.exists(self.composition):
-            os.mkdir(self.composition)
+        if output_path:
+            if not self.composition in output_path:
+                output_path = os.path.join(output_path, self.composition)
+        else:
+            output_path = self.composition
+        if not os.path.exists(output_path):
+            os.mkdir(output_path)
         dist = Distortions(defects=defects,)
         distorted_dict, metadata_dict = dist.write_vasp_files(
             incar_settings={
                 "NCORE": ncore,
                 "ENCUT": encut,
             },
-            output_path=self.composition,
+            output_path=output_path,
         )
