@@ -1,4 +1,4 @@
-"""Code to generate neutral vacancy defects.
+"""Code to generate neutral defects & apply SnB to them.
 """
 
 import os
@@ -10,12 +10,12 @@ from shakenbreak.input import Distortions
 
 from defects_workflow.defect_generation import _generate_defects
 
-class SnBVacancy():
+class SnBDefects():
 
     def __init__(
         self,
         structure: Structure,
-        defect_types=["vacancies"],
+        defect_types=["vacancies", "antisites", "interstitials"],
         only_neutral_defects=True,
         charge_tolerance=13,
         supercell_max_number_atoms=150,
@@ -61,7 +61,7 @@ class SnBVacancy():
 
         return self.defects
 
-    def generate_cation_vacancies(self):
+    def format_defects(self):
         """Get cation vacancies.
 
         Returns:
@@ -71,19 +71,9 @@ class SnBVacancy():
             self.generate_defects()
 
         # Only select vacancies
-        vacancies = self.defects['vacancies']
-        self.cation_vacancies = deepcopy(vacancies)
+        vacancies = self.defects['vacancies'].values()
 
-        # Only cation vacancies
-        for defect_name, defect_entry_list in vacancies.items():
-            d = defect_entry_list[0].defect  # first charged defect
-            site_index = d.defect_site_index
-            oxi_state = d.structure[site_index].specie.oxi_state
-            if oxi_state < 0:
-                print("Removing vacancy", defect_name)
-                self.cation_vacancies.pop(defect_name)
-
-        return self.cation_vacancies
+        return vacancies
 
     def apply_shakenbreak(
         self,
@@ -91,7 +81,6 @@ class SnBVacancy():
         ncore: int = 10,
         encut: int = 350,
         output_path: str = None,
-        dist_kwards: dict = {},
     ):
         """Apply ShakeNBreak to defects"""
         # Create directory for composition
@@ -102,7 +91,7 @@ class SnBVacancy():
             output_path = self.composition
         if not os.path.exists(output_path):
             os.mkdir(output_path)
-        dist = Distortions(defects=defects, **dist_kwards)
+        dist = Distortions(defects=defects,)
         distorted_dict, metadata_dict = dist.write_vasp_files(
             incar_settings={
                 "NCORE": ncore,

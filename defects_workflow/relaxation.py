@@ -1,6 +1,9 @@
 import os
 from copy import deepcopy
+
 from typing import Optional
+from typing import Union
+
 from monty.serialization import dumpfn, loadfn
 import warnings
 
@@ -36,7 +39,7 @@ default_potcar_dict = loadfn(
 def setup_relax_inputs(
     code_string: str,
     # VASP Input:
-    structure_data: StructureData | Structure,
+    structure_data: Union[StructureData, Structure],
     kpoints_data: KpointsData,
     # Aiida parameters:
     options: dict,

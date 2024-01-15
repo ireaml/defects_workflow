@@ -18,9 +18,11 @@ Currently, it automatises the following steps:
 
 # Installation
 
-1. Install `aiida-core` using the [system-wide installation](https://aiida.readthedocs.io/projects/aiida-core/en/latest/intro/install_system.html#intro-get-started-system-wide-install) and using `pip` rather than `conda`.
+1. Crate conda environment (python 3.10)
 
-2. Install other dependencies, including `aiida-archer2-scheduler` (to user `archer2`),
+2. Install `aiida-core` using the [system-wide installation](https://aiida.readthedocs.io/projects/aiida-core/en/latest/intro/install_system.html#intro-get-started-system-wide-install) and using `pip` rather than `conda`.
+
+3. Install other dependencies, including `aiida-archer2-scheduler` (to user `archer2`),
     `parsevasp`, `aiida-vasp`, `aiida-user-addons` and `defectivator`:
 ```
 git clone git@github.com:SMTG-UCL/aiida-archer2-scheduler.git
@@ -56,7 +58,13 @@ git checkout dev
 cd ../
 pip install ./defectivator
 ```
-3. Install `shakenbreak`
+
+Run `pip install reentry`
+And `reentry scan -r aiida`
+
+4. Configure aiida-vasp (potcars)
+
+5. Install `shakenbreak`
 ```
 git clone https://github.com/SMTG-UCL/shakenbreak.git
 cd shakenbreak
@@ -64,3 +72,16 @@ git checkout dimer
 cd ../
 pip install ./shakenbreak
 ```
+
+1. Install `defcets_workflow`
+```
+git clone <github_path>
+pip install .
+```
+
+1. Add ab-initio codes to aiida profile
+```
+See /mnt/c/Users/Irea/OneDrive - Imperial College London/04_Manuales_programas/aiida/machines_config
+```
+- dont specify memory for archer2, otherwise we get:
+`stderr=sbatch: error: Job rejected: Please do not specify memory for node-exclusive jobs`
