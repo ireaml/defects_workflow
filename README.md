@@ -7,13 +7,12 @@ Currently, it automates the following steps:
    * Defect charge states are determined based on the most common oxidation states for the element (following
      the strategy implemented in [defectivator](https://github.com/alexsquires/defectivator)
      by Dr Alex Squires)
-1. Screening of symmetry inequivalent interstitials.
+3. Screening of symmetry inequivalent interstitials.
    This is done by relaxing the neutral state of all the symmetry inequivalent
    configurations for a given interstitial. The following cases are filtered out:
     * Configurations that lead to the same final structures (only one is used for later calculations)
     * Configurations very high in energy compared to the most stable one (e.g. if > 1 eV)
-2. Structure searching using shakenbreak and submission of calculations
-3. Post-processing of results
+4. Structure searching using shakenbreak and submission of calculations
 
 
 # Installation
