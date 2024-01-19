@@ -72,10 +72,10 @@ cd ../
 pip install ./shakenbreak
 ```
 
-1. Install `defcets_workflow`
+6. Install `defects_workflow`
 ```
 git clone <github_path>
 pip install .
 ```
 
-1. Add ab-initio codes to aiida profile
+7. Add ab-initio codes to aiida profile
