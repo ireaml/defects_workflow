@@ -1,7 +1,7 @@
 # `defects_workflow`
 Workflow to run defect calculations with aiida.
 
-Currently, it automatises the following steps:
+Currently, it automates the following steps:
 1. Relaxation of host structure (from mp-id or user defined structure)
 2. Defect generation
    * Defect charge states are determined based on the most common oxidation states for the element (following
@@ -80,8 +80,3 @@ pip install .
 ```
 
 1. Add ab-initio codes to aiida profile
-```
-See /mnt/c/Users/Irea/OneDrive - Imperial College London/04_Manuales_programas/aiida/machines_config
-```
-- dont specify memory for archer2, otherwise we get:
-`stderr=sbatch: error: Job rejected: Please do not specify memory for node-exclusive jobs`
