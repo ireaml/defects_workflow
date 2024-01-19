@@ -66,15 +66,12 @@ And `reentry scan -r aiida`
 5. Install `shakenbreak`
 ```
 git clone https://github.com/SMTG-UCL/shakenbreak.git
-cd shakenbreak
-git checkout dimer
-cd ../
-pip install ./shakenbreak
+pip install .
 ```
 
 6. Install `defects_workflow`
 ```
-git clone <github_path>
+git clone https://github.com/ireaml/defects_workflow.git
 pip install .
 ```
 
