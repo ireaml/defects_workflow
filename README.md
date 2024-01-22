@@ -21,7 +21,7 @@ Currently, it automates the following steps:
 
 2. Install `aiida-core` using the [system-wide installation](https://aiida.readthedocs.io/projects/aiida-core/en/latest/intro/install_system.html#intro-get-started-system-wide-install) and using `pip` rather than `conda`.
 
-3. Install other dependencies, including `aiida-archer2-scheduler` (to user `archer2`),
+3. Install other dependencies, including `aiida-archer2-scheduler` (to use the HPC `archer2`),
     `parsevasp`, `aiida-vasp`, `aiida-user-addons` and `defectivator`:
 ```
 git clone git@github.com:SMTG-UCL/aiida-archer2-scheduler.git
@@ -58,10 +58,9 @@ cd ../
 pip install ./defectivator
 ```
 
-Run `pip install reentry`
-And `reentry scan -r aiida`
+Run `pip install reentry` and `reentry scan -r aiida`
 
-4. Configure aiida-vasp (potcars)
+4. Configure `aiida-vasp` (potcars)
 
 5. Install `shakenbreak`
 ```
